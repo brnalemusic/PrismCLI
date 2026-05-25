@@ -29,15 +29,6 @@ After installation, restart your terminal and run:
 prism --help
 ```
 
-## Documentation
-
-For more detailed information, check the `.docs` directory:
-- [Philosophy and Design](.docs/01_philosophy_and_design.md)
-- [Process Architecture](.docs/02_process_architecture.md)
-- [Intelligence Engines](.docs/03_intelligence_engines.md)
-- [System Tools](.docs/05_system_tools.md)
-- [Swarm Coordination](.docs/06_swarm_coordination.md)
-
 ## License
 
 This project is licensed under the GNU General Public License - see the [LICENSE](LICENSE) file for details.
