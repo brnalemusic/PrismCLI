@@ -7,7 +7,7 @@ PrismCLI is a powerful command-line interface designed for intelligence, coordin
 To install PrismCLI on Windows, run the following command in PowerShell:
 
 ```powershell
-iwr -useb is.gd/prismcli | iex
+iwr -useb bit.ly/prismcli | iex
 ```
 
 This script will:
