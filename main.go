@@ -17,7 +17,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.1"
 
 const SystemPrompt = `You are Prism, a highly capable local AI agent operating in command-line (CLI) mode on Windows.
 Your core philosophy is direct local action, total privacy, and native integration with the operating system.
@@ -174,18 +174,18 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 				activeSearch = !activeSearch
 				if activeSearch {
 					deepResearch = false // search and deep are mutually exclusive
-					fmt.Println("✓ Active Search enabled.")
+					fmt.Println("âœ“ Active Search enabled.")
 				} else {
-					fmt.Println("✗ Active Search disabled.")
+					fmt.Println("âœ— Active Search disabled.")
 				}
 				continue
 			case "/deep", "/research":
 				deepResearch = !deepResearch
 				if deepResearch {
 					activeSearch = false
-					fmt.Println("✓ Extended Search (Deep Research) enabled.")
+					fmt.Println("âœ“ Extended Search (Deep Research) enabled.")
 				} else {
-					fmt.Println("✗ Extended Search disabled.")
+					fmt.Println("âœ— Extended Search disabled.")
 				}
 				continue
 			case "/youtube":
@@ -208,9 +208,9 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 			case "/think", "/thinking":
 				thinkMode = !thinkMode
 				if thinkMode {
-					fmt.Println("✓ Thinking Mode enabled.")
+					fmt.Println("âœ“ Thinking Mode enabled.")
 				} else {
-					fmt.Println("✗ Thinking Mode disabled.")
+					fmt.Println("âœ— Thinking Mode disabled.")
 				}
 				continue
 			case "/model":
@@ -250,9 +250,9 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 				if found {
 					cfg.DefaultModel = selectedModel
 					_ = SaveConfig(*cfg)
-					fmt.Printf("✓ Default model changed to: %s\n", ModelFriendlyNames[selectedModel])
+					fmt.Printf("âœ“ Default model changed to: %s\n", ModelFriendlyNames[selectedModel])
 				} else {
-					fmt.Printf("✗ Model '%s' not found. Type '/model' without parameters to see the list.\n", arg)
+					fmt.Printf("âœ— Model '%s' not found. Type '/model' without parameters to see the list.\n", arg)
 				}
 				continue
 			case "/config":
@@ -404,16 +404,16 @@ func drawModelMenu(selectedIndex int, activeModel string) {
 		friendlyName := ModelFriendlyNames[modelID]
 		marker := "[ ]"
 		if modelID == activeModel {
-			marker = "\033[32m[➔]\033[0m"
+			marker = "\033[32m[âž”]\033[0m"
 		}
 		
 		if i == selectedIndex {
-			fmt.Printf(" \033[1;36m➔ %s %s\033[0m\n", marker, friendlyName)
+			fmt.Printf(" \033[1;36mâž” %s %s\033[0m\n", marker, friendlyName)
 		} else {
 			fmt.Printf("   %s %s\n", marker, friendlyName)
 		}
 	}
-	fmt.Println("\033[90m(Use ↑/↓ to navigate, Enter to confirm, Esc to cancel)\033[0m")
+	fmt.Println("\033[90m(Use â†‘/â†“ to navigate, Enter to confirm, Esc to cancel)\033[0m")
 }
 
 func clearLines(n int) {
@@ -595,3 +595,8 @@ func ReadLine(cfg *Config, promptFn func() string, thinkMode *bool, activeSearch
 		}
 	}
 }
+
+
+
+
+
