@@ -815,16 +815,22 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 	}
 
 	// Visual indicators for terminal
+	hasIndicators := false
 	if thinkMode {
 		fmt.Print("\033[33m[Thinking...]\033[0m ")
+		hasIndicators = true
 	}
 	if activeSearch {
 		fmt.Print("\033[32m[Active Search]\033[0m ")
+		hasIndicators = true
 	}
 	if deepResearch {
 		fmt.Print("\033[36m[Deep Research]\033[0m ")
+		hasIndicators = true
 	}
-	fmt.Println()
+	if hasIndicators {
+		fmt.Println()
+	}
 
 	var finalResponse string
 
@@ -859,7 +865,7 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 
 		// Execute API call
 		// We support streaming responses directly to stdout
-		fmt.Print("\033[34m[Prism]\033[0m ")
+		fmt.Printf("\n\033[34m[%s]\033[0m\n", ModelFriendlyNames[modelName])
 		
 		stream := client.Models.GenerateContentStream(ctx, modelName, contents, genConfig)
 		
@@ -918,7 +924,7 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 		// If the model requested a tool execution
 		if lastToolCallPart != nil && lastToolCallPart.FunctionCall != nil {
 			fnCall := lastToolCallPart.FunctionCall
-			fmt.Printf("\n\033[32m[Tool Requested: %s]\033[0m\n", fnCall.Name)
+			fmt.Printf("\n\n\033[32m[Tool Requested: %s]\033[0m\n", fnCall.Name)
 			
 			// Convert Args map[string]interface{}
 			args := make(map[string]interface{})
@@ -967,7 +973,7 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 				},
 			})
 
-			fmt.Println("\033[32m[Tool Executed Successfully! Continuing flow...]\033[0m")
+			fmt.Printf("\n\033[32m[Tool Executed Successfully! Continuing flow...]\033[0m\n")
 			continue // Run the loop again with the new context containing the tool result
 		}
 
@@ -991,10 +997,14 @@ type StreamFilter struct {
 	thinkMode   bool
 	thoughtBuf  strings.Builder
 	textBuf     strings.Builder
+	mdColorizer *MarkdownColorizer
 }
 
 func NewStreamFilter(thinkMode bool) *StreamFilter {
-	return &StreamFilter{thinkMode: thinkMode}
+	return &StreamFilter{
+		thinkMode:   thinkMode,
+		mdColorizer: NewMarkdownColorizer(),
+	}
 }
 
 func (sf *StreamFilter) Feed(chunk string) {
@@ -1013,7 +1023,7 @@ func (sf *StreamFilter) Feed(chunk string) {
 						// Print everything except the partial prefix
 						toPrint := sf.buffer[:len(sf.buffer)-i]
 						if len(toPrint) > 0 {
-							fmt.Print(toPrint)
+							sf.mdColorizer.Print(toPrint)
 							sf.textBuf.WriteString(toPrint)
 							sf.buffer = sf.buffer[len(sf.buffer)-i:]
 						}
@@ -1023,7 +1033,7 @@ func (sf *StreamFilter) Feed(chunk string) {
 				}
 				if !partialPrefix {
 					// Print all and clear buffer
-					fmt.Print(sf.buffer)
+					sf.mdColorizer.Print(sf.buffer)
 					sf.textBuf.WriteString(sf.buffer)
 					sf.buffer = ""
 				}
@@ -1032,7 +1042,7 @@ func (sf *StreamFilter) Feed(chunk string) {
 				// Print everything before "<thought>"
 				before := sf.buffer[:idx]
 				if len(before) > 0 {
-					fmt.Print(before)
+					sf.mdColorizer.Print(before)
 					sf.textBuf.WriteString(before)
 				}
 				sf.inThought = true
@@ -1088,7 +1098,7 @@ func (sf *StreamFilter) Feed(chunk string) {
 func (sf *StreamFilter) Flush() {
 	if len(sf.buffer) > 0 {
 		if !sf.inThought {
-			fmt.Print(sf.buffer)
+			sf.mdColorizer.Print(sf.buffer)
 			sf.textBuf.WriteString(sf.buffer)
 		} else {
 			if sf.thinkMode {
@@ -1099,6 +1109,7 @@ func (sf *StreamFilter) Flush() {
 		}
 		sf.buffer = ""
 	}
+	sf.mdColorizer.Flush()
 }
 
 func (sf *StreamFilter) Text() string {

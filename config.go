@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/pterm/pterm"
 	"golang.org/x/sys/windows"
 )
 
@@ -211,18 +212,16 @@ func (cfg *Config) SetAPIKey(key string) error {
 // RunSetupWizard prompts the user for their Gemini API Key in the terminal.
 func RunSetupWizard(cfg *Config) error {
 	fmt.Println()
-	fmt.Println("==================================================")
-	fmt.Println("             PRISM CONFIGURATION WIZARD")
-	fmt.Println("==================================================")
-	fmt.Println("No Gemini API key was found.")
-	fmt.Println("This key is required to connect to the AI models.")
-	fmt.Println("The key will be securely encrypted on your machine.")
-	fmt.Println("--------------------------------------------------")
+	pterm.DefaultHeader.WithFullWidth().WithBackgroundStyle(pterm.NewStyle(pterm.BgMagenta)).WithMargin(10).Println("PRISM CONFIGURATION WIZARD")
+	pterm.Info.Println("No Gemini API key was found or reconfiguration requested.")
+	pterm.Info.Println("This key is required to connect to the AI models.")
+	pterm.Info.Println("The key will be securely encrypted on your machine.")
+	fmt.Println()
 
 	reader := bufio.NewReader(os.Stdin)
 	
 	// We can use helper to read password natively on Windows
-	fmt.Print("Please enter your Gemini API Key: ")
+	pterm.Print(pterm.Yellow("Please enter your Gemini API Key: "))
 	
 	// Let's try reading password with console mask or simply reading it
 	key, err := readPasswordWindows()
@@ -244,9 +243,8 @@ func RunSetupWizard(cfg *Config) error {
 		return fmt.Errorf("error saving API key: %v", err)
 	}
 
-	fmt.Println("\n--------------------------------------------------")
-	fmt.Println("✓ API Key saved successfully via Windows DPAPI!")
-	fmt.Println("==================================================")
+	fmt.Println()
+	pterm.Success.Println("API Key saved successfully via Windows DPAPI!")
 	fmt.Println()
 	return nil
 }

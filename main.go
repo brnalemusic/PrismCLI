@@ -14,10 +14,11 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/pterm/pterm"
 	"golang.org/x/sys/windows"
 )
 
-const Version = "0.1.1"
+const Version = "0.2.0"
 
 const SystemPrompt = `You are Prism, a highly capable local AI agent operating in command-line (CLI) mode on Windows.
 Your core philosophy is direct local action, total privacy, and native integration with the operating system.
@@ -103,17 +104,26 @@ func main() {
 }
 
 func runChatREPL(cfg *Config, startSearch, startDeep bool) {
-	fmt.Println("==================================================")
-	fmt.Printf("              PRISM CLI - v%s\n", Version)
-	fmt.Println("==================================================")
-	fmt.Println("Type your messages. Supported commands:")
-	fmt.Println("  /search           - Toggles active web search")
-	fmt.Println("  /deep or /research - Toggles deep research")
-	fmt.Println("  /youtube <term>   - Opens video directly in browser")
-	fmt.Println("  /swarm <goal>     - Executes agents in swarm")
-	fmt.Println("  /config           - Reconfigures the API key")
-	fmt.Println("  /exit or /quit    - Exits the program")
-	fmt.Println("==================================================")
+	pterm.DefaultHeader.WithFullWidth().WithBackgroundStyle(pterm.NewStyle(pterm.BgCyan)).WithMargin(10).Printf("PRISM CLI - v%s", Version)
+	
+	pterm.Info.Prefix = pterm.Prefix{
+		Text:  "TIPS",
+		Style: pterm.NewStyle(pterm.BgLightBlue, pterm.FgBlack),
+	}
+	pterm.Info.Println("Type your messages. Supported commands:")
+	
+	commands := [][]string{
+		{"/search", "Toggles active web search"},
+		{"/deep or /research", "Toggles deep research"},
+		{"/youtube <term>", "Opens video directly in browser"},
+		{"/swarm <goal>", "Executes agents in swarm"},
+		{"/config", "Reconfigures the API key"},
+		{"/clear", "Clears the screen and chat history"},
+		{"/exit or /quit", "Exits the program"},
+	}
+	
+	pterm.DefaultTable.WithHasHeader(false).WithData(commands).Render()
+	fmt.Println()
 
 	sessionID := fmt.Sprintf("chat_%d", time.Now().Unix())
 	session := ChatSession{
@@ -127,26 +137,32 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 	thinkMode := true // Think Mode default enabled for reasoning models
 
 	promptFn := func() string {
-		promptSymbol := "\033[1;34mPrism >\033[0m "
+		userName := "User"
+		if u := os.Getenv("USERNAME"); u != "" {
+			userName = u
+		}
+		
+		promptSymbol := fmt.Sprintf("\033[1;34m%s >\033[0m ", userName)
 		if thinkMode {
 			if deepResearch {
-				promptSymbol = "\033[1;36mPrism (Deep Research + Thinking) >\033[0m "
+				promptSymbol = fmt.Sprintf("\033[1;36m%s (Deep Research + Thinking) >\033[0m ", userName)
 			} else if activeSearch {
-				promptSymbol = "\033[1;32mPrism (Search + Thinking) >\033[0m "
+				promptSymbol = fmt.Sprintf("\033[1;32m%s (Search + Thinking) >\033[0m ", userName)
 			} else {
-				promptSymbol = "\033[1;33mPrism (Thinking) >\033[0m "
+				promptSymbol = fmt.Sprintf("\033[1;33m%s (Thinking) >\033[0m ", userName)
 			}
 		} else {
 			if deepResearch {
-				promptSymbol = "\033[1;36mPrism (Deep Research) >\033[0m "
+				promptSymbol = fmt.Sprintf("\033[1;36m%s (Deep Research) >\033[0m ", userName)
 			} else if activeSearch {
-				promptSymbol = "\033[1;32mPrism (Search) >\033[0m "
+				promptSymbol = fmt.Sprintf("\033[1;32m%s (Search) >\033[0m ", userName)
 			}
 		}
 		return promptSymbol
 	}
 
 	for {
+		fmt.Println()
 		input, err := ReadLine(cfg, promptFn, &thinkMode, &activeSearch, &deepResearch)
 		if err != nil {
 			break
@@ -261,6 +277,16 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 					fmt.Printf("Configuration error: %v\n", err)
 				}
 				continue
+			case "/clear":
+				fmt.Print("\033[H\033[2J")
+				sessionID = fmt.Sprintf("chat_%d", time.Now().Unix())
+				session = ChatSession{
+					ID:       sessionID,
+					Title:    "Quick Chat",
+					Messages: make([]ChatMessage, 0),
+				}
+				fmt.Println("âœ“ Chat and history cleared.")
+				continue
 			case "/help":
 				fmt.Println("Available commands:")
 				fmt.Println("  /search           - Toggles active web search")
@@ -270,6 +296,7 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 				fmt.Println("  /youtube <term>   - Opens video directly in browser")
 				fmt.Println("  /swarm <goal>     - Executes agents in swarm")
 				fmt.Println("  /config           - Reconfigures the API key")
+				fmt.Println("  /clear            - Clears the screen and chat history")
 				fmt.Println("  /exit             - Exits the program")
 				continue
 			default:
@@ -595,6 +622,7 @@ func ReadLine(cfg *Config, promptFn func() string, thinkMode *bool, activeSearch
 		}
 	}
 }
+
 
 
 

@@ -1,3 +1,5 @@
 /.docs
 prism.exe
+prism.exe~
+*prism*.exe*
 update-version.ps1
