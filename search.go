@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -24,115 +23,83 @@ type SearchResult struct {
 	Snippet string `json:"snippet"`
 }
 
-// ScrapeDuckDuckGo queries DuckDuckGo HTML-only search and parses top 5 results.
-func ScrapeDuckDuckGo(query string) ([]SearchResult, error) {
-	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
-	
-	req, err := http.NewRequest("GET", searchURL, nil)
+// splitByRegex splits a string using a precompiled regular expression, mimicking JS's split.
+func splitByRegex(s string, re *regexp.Regexp) []string {
+	indices := re.FindAllStringIndex(s, -1)
+	if len(indices) == 0 {
+		return []string{s}
+	}
+
+	result := make([]string, 0, len(indices)+1)
+	lastIdx := 0
+	for _, idx := range indices {
+		result = append(result, s[lastIdx:idx[0]])
+		lastIdx = idx[1]
+	}
+	result = append(result, s[lastIdx:])
+	return result
+}
+
+// normalizeHttpUrl normalizes and validates a URL, adding schemes if needed.
+func normalizeHttpUrl(input string, label string) (string, error) {
+	cleaned := strings.TrimSpace(input)
+	if cleaned == "" {
+		return "", fmt.Errorf("missing required %s. Provide a complete URL", label)
+	}
+
+	placeholderRegex := regexp.MustCompile(`(?i)^(URL|LINK|WEBPAGE|TARGET)([_-]?\w+)?$`)
+	if placeholderRegex.MatchString(cleaned) {
+		return "", fmt.Errorf("invalid %s: %q. Replace placeholders with a real URL", label, input)
+	}
+
+	hasHttpScheme := regexp.MustCompile(`(?i)^https?://`).MatchString(cleaned)
+	localhostWithoutScheme := regexp.MustCompile(`(?i)^(localhost|127\.0\.0\.1|\[::1\])(?::|/|$)`).MatchString(cleaned)
+
+	var candidate string
+	if hasHttpScheme {
+		candidate = cleaned
+	} else if localhostWithoutScheme {
+		candidate = "http://" + cleaned
+	} else {
+		candidate = "https://" + cleaned
+	}
+
+	parsed, err := url.Parse(candidate)
 	if err != nil {
-		return nil, err
+		return "", fmt.Errorf("invalid %s: %v", label, err)
 	}
 
-	// Browser headers to avoid blocks
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-
-	client := &http.Client{
-		Timeout: 10 * time.Second,
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("unsupported %s protocol: %s", label, parsed.Scheme)
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
+	return parsed.String(), nil
+}
 
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("DuckDuckGo returned status %d", resp.StatusCode)
-	}
+// stripHtml removes all HTML tags, script, and style blocks repeatedly until the output stabilizes.
+func stripHtml(htmlStr string) string {
+	text := htmlStr
+	var previous string
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	bodyStr := string(bodyBytes)
+	reScript := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`)
+	reStyle := regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`)
+	reTags := regexp.MustCompile(`<[^>]*>`)
 
-	// Regex to extract result divs
-	// DuckDuckGo HTML contains results in: <div class="result results_links results_links_deep web-result ">
-	resultBlockRegex := regexp.MustCompile(`(?s)<div[^>]*class="[^"]*results_links[^"]*"[^>]*>(.*?)</div>\s*</div>\s*</div>`)
-	matches := resultBlockRegex.FindAllStringSubmatch(bodyStr, -1)
-
-	var results []SearchResult
-	count := 0
-
-	for _, match := range matches {
-		if count >= 5 {
+	for {
+		previous = text
+		text = reScript.ReplaceAllString(text, "")
+		text = reStyle.ReplaceAllString(text, "")
+		text = reTags.ReplaceAllString(text, " ")
+		if text == previous {
 			break
 		}
-		block := match[1]
-
-		// Extract URL from redirect link: uddg=URL_ENCODED
-		uddgRegex := regexp.MustCompile(`uddg=([^&"]+)`)
-		uddgMatch := uddgRegex.FindStringSubmatch(block)
-		if len(uddgMatch) < 2 {
-			continue
-		}
-
-		rawURL, err := url.QueryUnescape(uddgMatch[1])
-		if err != nil {
-			continue
-		}
-
-		// Extract Title
-		// In html.duckduckgo.com it is inside <a class="result__snippet" ...> or similar under h2
-		titleRegex := regexp.MustCompile(`(?s)<h2[^>]*>.*?<a[^>]*>(.*?)</a>.*?</h2>`)
-		titleMatch := titleRegex.FindStringSubmatch(block)
-		title := "No Title"
-		if len(titleMatch) >= 2 {
-			title = stripHTMLTags(titleMatch[1])
-			title = html.UnescapeString(strings.TrimSpace(title))
-		}
-
-		// Extract Snippet
-		snippetRegex := regexp.MustCompile(`(?s)<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>`)
-		snippetMatch := snippetRegex.FindStringSubmatch(block)
-		snippet := ""
-		if len(snippetMatch) >= 2 {
-			snippet = stripHTMLTags(snippetMatch[1])
-			snippet = html.UnescapeString(strings.TrimSpace(snippet))
-		}
-
-		results = append(results, SearchResult{
-			Title:   title,
-			URL:     rawURL,
-			Snippet: snippet,
-		})
-		count++
 	}
-
-	return results, nil
+	return text
 }
 
-// stripHTMLTags removes all HTML tags from a string.
-func stripHTMLTags(src string) string {
-	re := regexp.MustCompile(`<[^>]*>`)
-	return re.ReplaceAllString(src, "")
-}
-
-// CleanHTMLContent removes scripts, styles and extracts plain text.
+// CleanHTMLContent removes scripts, styles and extracts plain text up to 20,000 characters.
 func CleanHTMLContent(htmlStr string) string {
-	// Remove script blocks
-	reScript := regexp.MustCompile(`(?s)<script[^>]*>.*?</script>`)
-	htmlStr = reScript.ReplaceAllString(htmlStr, "")
-
-	// Remove style blocks
-	reStyle := regexp.MustCompile(`(?s)<style[^>]*>.*?</style>`)
-	htmlStr = reStyle.ReplaceAllString(htmlStr, "")
-
-	// Replace HTML tags with space
-	reTags := regexp.MustCompile(`<[^>]*>`)
-	plainText := reTags.ReplaceAllString(htmlStr, " ")
+	plainText := stripHtml(htmlStr)
 
 	// Unescape HTML entities
 	plainText = html.UnescapeString(plainText)
@@ -141,37 +108,16 @@ func CleanHTMLContent(htmlStr string) string {
 	words := strings.Fields(plainText)
 	cleaned := strings.Join(words, " ")
 
-	// Limit length to 10000 characters
-	if len(cleaned) > 10000 {
-		cleaned = cleaned[:10000] + "..."
+	// Limit length to 20000 characters
+	if len(cleaned) > 20000 {
+		cleaned = cleaned[:20000] + "... (truncated)"
 	}
 
 	return cleaned
 }
 
-// WebReader retrieves the contents of a webpage.
-// Layer 1: Direct HTTP Request.
-// Layer 2: Headless Chrome Dump-DOM Fallback.
-func WebReader(targetURL string) (string, error) {
-	// Layer 1: Direct Request
-	req, err := http.NewRequest("GET", targetURL, nil)
-	if err == nil {
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-		client := &http.Client{Timeout: 8 * time.Second}
-		resp, err := client.Do(req)
-		if err == nil && resp.StatusCode == 200 {
-			bodyBytes, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if err == nil {
-				text := CleanHTMLContent(string(bodyBytes))
-				if len(strings.TrimSpace(text)) > 100 {
-					return text, nil
-				}
-			}
-		}
-	}
-
-	// Layer 2: Headless Chrome Fallback
+// fetchWithHeadlessChrome fetches a URL by dumping the DOM using headless Chrome.
+func fetchWithHeadlessChrome(targetURL string) (string, error) {
 	chromePaths := []string{
 		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
 		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
@@ -187,14 +133,14 @@ func WebReader(targetURL string) (string, error) {
 	}
 
 	if chromePath == "" {
-		return "", fmt.Errorf("direct request failed and Chrome not found for fallback")
+		return "", fmt.Errorf("headless Chrome binary not found")
 	}
 
-	// Execute chrome --headless --disable-gpu --dump-dom <url>
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, chromePath, "--headless", "--disable-gpu", "--dump-dom", targetURL)
+	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	cmd := exec.CommandContext(ctx, chromePath, "--headless", "--disable-gpu", "--user-agent="+userAgent, "--dump-dom", targetURL)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 
@@ -202,8 +148,238 @@ func WebReader(targetURL string) (string, error) {
 		return "", fmt.Errorf("failed to run headless Chrome: %v", err)
 	}
 
-	text := CleanHTMLContent(stdout.String())
-	return text, nil
+	return stdout.String(), nil
+}
+
+// parseDuckDuckGoHTML extracts SearchResult items from DuckDuckGo HTML source.
+func parseDuckDuckGoHTML(htmlContent string) []SearchResult {
+	splitRegex := regexp.MustCompile(`(?i)<div[^>]*class="[^"]*result(?:__body|s_links| )[^"]*"[^>]*>`)
+	resultBlocks := splitByRegex(htmlContent, splitRegex)
+	if len(resultBlocks) > 1 {
+		resultBlocks = resultBlocks[1:]
+	} else {
+		return nil
+	}
+
+	titleRegex := regexp.MustCompile(`(?is)<a[^>]*class="[^"]*result__a[^"]*"[^>]*>(.*?)</a>`)
+
+	linkRegex1 := regexp.MustCompile(`(?is)href="([^"]*)"[^>]*class="[^"]*result__a[^"]*"`)
+	linkRegex2 := regexp.MustCompile(`(?is)class="[^"]*result__a[^"]*"[^>]*href="([^"]*)"`)
+	linkRegex3 := regexp.MustCompile(`(?is)href="([^"]*)"`)
+
+	snippetRegex1 := regexp.MustCompile(`(?is)<[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)<\/(?:a|div|span|p)>`)
+	snippetRegex2 := regexp.MustCompile(`(?is)<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>`)
+	snippetRegex3 := regexp.MustCompile(`(?is)<div[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</div>`)
+
+	fallbackRegex1 := regexp.MustCompile(`(?is)</h2>(.*?)<div[^>]*class="[^"]*result__extras`)
+	fallbackRegex2 := regexp.MustCompile(`(?is)</a>(.*?)<div[^>]*class="[^"]*result__extras`)
+
+	var results []SearchResult
+	for _, body := range resultBlocks {
+		if len(results) >= 5 {
+			break
+		}
+
+		titleMatch := titleRegex.FindStringSubmatch(body)
+
+		var rawLink string
+		if m := linkRegex1.FindStringSubmatch(body); len(m) >= 2 {
+			rawLink = m[1]
+		} else if m := linkRegex2.FindStringSubmatch(body); len(m) >= 2 {
+			rawLink = m[1]
+		} else if m := linkRegex3.FindStringSubmatch(body); len(m) >= 2 {
+			rawLink = m[1]
+		}
+
+		var snippetContent string
+		var snippetMatch []string
+		if m := snippetRegex1.FindStringSubmatch(body); len(m) >= 2 {
+			snippetMatch = m
+		} else if m := snippetRegex2.FindStringSubmatch(body); len(m) >= 2 {
+			snippetMatch = m
+		} else if m := snippetRegex3.FindStringSubmatch(body); len(m) >= 2 {
+			snippetMatch = m
+		}
+
+		if len(snippetMatch) == 0 {
+			if m := fallbackRegex1.FindStringSubmatch(body); len(m) >= 2 {
+				snippetMatch = m
+			} else if m := fallbackRegex2.FindStringSubmatch(body); len(m) >= 2 {
+				snippetMatch = m
+			}
+		}
+
+		if len(snippetMatch) >= 2 {
+			snippetContent = snippetMatch[1]
+		}
+
+		if len(titleMatch) >= 2 && rawLink != "" {
+			targetLink := rawLink
+			if strings.HasPrefix(targetLink, "//") {
+				targetLink = "https:" + targetLink
+			} else if strings.HasPrefix(targetLink, "/") {
+				targetLink = "https://duckduckgo.com" + targetLink
+			}
+
+			if parsedURL, err := url.Parse(targetLink); err == nil {
+				uddg := parsedURL.Query().Get("uddg")
+				if uddg != "" {
+					if decoded, err := url.QueryUnescape(uddg); err == nil {
+						targetLink = decoded
+					}
+				}
+			}
+
+			titleText := strings.TrimSpace(stripHtml(titleMatch[1]))
+			titleText = html.UnescapeString(titleText)
+			snippetText := strings.TrimSpace(stripHtml(snippetContent))
+			snippetText = html.UnescapeString(snippetText)
+
+			results = append(results, SearchResult{
+				Title:   titleText,
+				URL:     targetLink,
+				Snippet: snippetText,
+			})
+		}
+	}
+	return results
+}
+
+// ScrapeDuckDuckGo queries DuckDuckGo HTML-only search and parses top 5 results.
+// Employs a headless Chrome fallback to bypass 202/403 errors or scraping blocks.
+func ScrapeDuckDuckGo(query string) ([]SearchResult, error) {
+	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
+	userAgent := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+	var htmlContent string
+	var fetchErr error
+
+	// Try direct GET request
+	req, err := http.NewRequest("GET", searchURL, nil)
+	if err == nil {
+		req.Header.Set("User-Agent", userAgent)
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+
+		resp, err := client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				bodyBytes, readErr := io.ReadAll(resp.Body)
+				if readErr == nil {
+					htmlContent = string(bodyBytes)
+				} else {
+					fetchErr = readErr
+				}
+			} else {
+				fetchErr = fmt.Errorf("DuckDuckGo returned status %d", resp.StatusCode)
+			}
+		} else {
+			fetchErr = err
+		}
+	} else {
+		fetchErr = err
+	}
+
+	var results []SearchResult
+	if htmlContent != "" {
+		results = parseDuckDuckGoHTML(htmlContent)
+	}
+
+	// Fallback to Headless Chrome if direct request failed, was blocked, or yielded no results
+	if len(results) == 0 {
+		chromeHTML, chromeErr := fetchWithHeadlessChrome(searchURL)
+		if chromeErr == nil {
+			results = parseDuckDuckGoHTML(chromeHTML)
+		} else {
+			if fetchErr != nil {
+				return nil, fmt.Errorf("direct fetch failed (%v) and Chrome fallback failed (%v)", fetchErr, chromeErr)
+			}
+			return nil, fmt.Errorf("chrome fallback failed: %v", chromeErr)
+		}
+	}
+
+	return results, nil
+}
+
+// WebReader retrieves and cleans the contents of a webpage.
+// Layer 1: Direct HTTP Request with browser-like headers.
+// Layer 2: Headless Chrome Dump-DOM Fallback.
+func WebReader(targetURL string) (string, error) {
+	normalized, err := normalizeHttpUrl(targetURL, "url")
+	if err != nil {
+		return "", err
+	}
+
+	var htmlContent string
+	var directErr error
+
+	// Layer 1: Direct Request
+	req, err := http.NewRequest("GET", normalized, nil)
+	if err == nil {
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7")
+		req.Header.Set("Cache-Control", "no-cache")
+		req.Header.Set("Pragma", "no-cache")
+		req.Header.Set("Sec-Ch-Ua", `"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"`)
+		req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+		req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+		req.Header.Set("Sec-Fetch-Dest", "document")
+		req.Header.Set("Sec-Fetch-Mode", "navigate")
+		req.Header.Set("Sec-Fetch-Site", "none")
+		req.Header.Set("Sec-Fetch-User", "?1")
+		req.Header.Set("Upgrade-Insecure-Requests", "1")
+
+		client := &http.Client{
+			Timeout: 10 * time.Second,
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				bodyBytes, readErr := io.ReadAll(resp.Body)
+				if readErr == nil {
+					htmlContent = string(bodyBytes)
+				} else {
+					directErr = readErr
+				}
+			} else {
+				directErr = fmt.Errorf("website returned status %d", resp.StatusCode)
+			}
+		} else {
+			directErr = err
+		}
+	} else {
+		directErr = err
+	}
+
+	var cleanedText string
+	if htmlContent != "" {
+		cleanedText = CleanHTMLContent(htmlContent)
+	}
+
+	// Layer 2: Headless Chrome Fallback if direct request failed, was blocked, or produced insufficient text
+	if len(strings.TrimSpace(cleanedText)) <= 100 {
+		chromeHTML, chromeErr := fetchWithHeadlessChrome(normalized)
+		if chromeErr == nil {
+			cleanedText = CleanHTMLContent(chromeHTML)
+		} else {
+			if directErr != nil {
+				return "", fmt.Errorf("direct request failed (%v) and Chrome fallback failed (%v)", directErr, chromeErr)
+			}
+			return "", fmt.Errorf("chrome fallback failed: %v", chromeErr)
+		}
+	}
+
+	// Wait 500ms before returning to match the TS implementation
+	time.Sleep(500 * time.Millisecond)
+
+	return cleanedText, nil
 }
 
 // DeepResearchProtocol implements the 5-phase Deep Research process in the terminal.
@@ -221,7 +397,7 @@ func DeepResearchProtocol(ctx context.Context, initialQuery string, performSearc
 
 	// Phase 2: Initial Contextualization
 	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  [Phase 2/5] Performing initial searches to capture keywords...", 70), borderCol, resetCol)
-	results, err := performSearchFunc(initialQuery)
+	_, err := performSearchFunc(initialQuery)
 	if err != nil {
 		fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
 		return "", fmt.Errorf("error in initial search: %v", err)
@@ -231,26 +407,16 @@ func DeepResearchProtocol(ctx context.Context, initialQuery string, performSearc
 	fmt.Println(borderCol + drawBoxLine("╠", "═", 70, "╣") + resetCol)
 	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  [Phase 3/5] Research Plan Prepared", 70), borderCol, resetCol)
 	fmt.Println(borderCol + drawBoxLine("╠", "═", 70, "╣") + resetCol)
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  Preliminary results found:", 70), borderCol, resetCol)
-	for idx, r := range results {
-		if idx >= 3 {
-			break
-		}
-		lineResult := fmt.Sprintf("   - [%s] %s", r.Title, r.URL)
-		fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(lineResult, 70), borderCol, resetCol)
-	}
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("", 70), borderCol, resetCol)
 	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  Detailed plan:", 70), borderCol, resetCol)
 	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("   1. Search for variations and related technical terms.", 70), borderCol, resetCol)
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("   2. Track and read the most promising links (10 iterations).", 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("   2. Track and read the most promising sources (10 iterations).", 70), borderCol, resetCol)
 	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("   3. Synthesize and cross-reference the collected data.", 70), borderCol, resetCol)
 	fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
 	fmt.Println()
 
 	// Prompt the user for confirmation
 	fmt.Printf("\033[33m⚡ Do you want to proceed with the exhaustive investigation? [y/N]:\033[0m ")
-	reader := bufio.NewReader(os.Stdin)
-	ans, err := reader.ReadString('\n')
+	ans, err := ReadLineWithDefault("")
 	if err != nil {
 		return "", err
 	}
@@ -292,7 +458,7 @@ func DeepResearchProtocol(ctx context.Context, initialQuery string, performSearc
 		loopResults, err := performSearchFunc(q)
 		if err == nil && len(loopResults) > 0 {
 			targetLink := loopResults[0].URL
-			lineRead := fmt.Sprintf("     -> Reading content from: %s...", targetLink)
+			lineRead := "     -> Reading page content..."
 			fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(lineRead, 70), borderCol, resetCol)
 			content, err := readLinkFunc(targetLink)
 			if err == nil {

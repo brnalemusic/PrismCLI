@@ -208,29 +208,34 @@ func (cfg *Config) SetAPIKey(key string) error {
 	return SaveConfig(*cfg)
 }
 
-// RunSetupWizard prompts the user for their Gemini API Key in the terminal.
+// RunSetupWizard prompts the user for their Gemini API Key in the terminal, showing the current key pre-filled.
 func RunSetupWizard(cfg *Config) error {
 	borderCol := "\033[38;5;129m" // Magenta/Purple
 	resetCol := "\033[0m"
 	
+	currentKey, _ := cfg.GetAPIKey()
+	defaultValue := currentKey
+
 	fmt.Println()
-	fmt.Println(borderCol + drawBoxHeader("╔", "═", " PRISM SETUP WIZARD ", 60, "╗") + resetCol)
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  No Gemini API key was found or reconfiguration requested.", 60), borderCol, resetCol)
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  This key is required to connect to the AI models.", 60), borderCol, resetCol)
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  The key will be securely encrypted on your machine.", 60), borderCol, resetCol)
-	fmt.Println(borderCol + drawBoxLine("╚", "═", 60, "╝") + resetCol)
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " PRISM SETUP WIZARD ", 70, "╗") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  No Gemini API key was found or reconfiguration requested.", 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  This key is required to connect to the AI models.", 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  The key will be securely encrypted on your machine.", 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("", 70), borderCol, resetCol)
+	
+	displayKey := currentKey
+	if displayKey == "" {
+		displayKey = "None"
+	}
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(fmt.Sprintf("  Current API Key: %s", displayKey), 70), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
 	fmt.Println()
 
 	fmt.Printf("\033[33m🔑 Please enter your Gemini API Key:\033[0m ")
 	
-	key, err := readPasswordWindows()
+	key, err := ReadLineWithDefault(defaultValue)
 	if err != nil {
-		reader := bufio.NewReader(os.Stdin)
-		k, err := reader.ReadString('\n')
-		if err != nil {
-			return err
-		}
-		key = strings.TrimSpace(k)
+		return err
 	}
 
 	if key == "" {
@@ -243,34 +248,97 @@ func RunSetupWizard(cfg *Config) error {
 	}
 
 	fmt.Println()
-	fmt.Println("\033[1;32m✔ API Key saved successfully via Windows DPAPI!\033[0m")
+	fmt.Printf("\033[1;32m✔ API Key saved successfully via Windows DPAPI: \033[1;33m%s\033[0m\n", key)
 	fmt.Println()
 	return nil
 }
 
-// readPasswordWindows reads console input without echoing it
-func readPasswordWindows() (string, error) {
-	// Standard Windows syscall to disable echoing
+// ReadLineWithDefault reads raw input character-by-character on Windows, pre-filling with a default value.
+func ReadLineWithDefault(defaultValue string) (string, error) {
 	stdin := windows.Handle(os.Stdin.Fd())
 	var mode uint32
-	err := windows.GetConsoleMode(stdin, &mode)
-	if err != nil {
-		return "", err
+	isConsole := windows.GetConsoleMode(stdin, &mode) == nil
+
+	if !isConsole {
+		fmt.Print(defaultValue)
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			return defaultValue, nil
+		}
+		return trimmed, nil
 	}
 
-	// Disable echo and line input
-	// ENABLE_ECHO_INPUT = 0x0004
-	err = windows.SetConsoleMode(stdin, mode &^ 0x0004)
-	if err != nil {
-		return "", err
-	}
-	defer windows.SetConsoleMode(stdin, mode)
+	originalMode := mode
+	rawMode := originalMode &^ (windows.ENABLE_LINE_INPUT | windows.ENABLE_ECHO_INPUT)
+	_ = windows.SetConsoleMode(stdin, rawMode)
+	defer windows.SetConsoleMode(stdin, originalMode)
 
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
+	var line []rune
+	if defaultValue != "" {
+		line = []rune(defaultValue)
+		fmt.Print(defaultValue)
 	}
 
-	return strings.TrimSpace(line), nil
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	procReadConsoleInputW := kernel32.NewProc("ReadConsoleInputW")
+
+	for {
+		var record INPUT_RECORD
+		var read uint32
+		r, _, err := procReadConsoleInputW.Call(
+			uintptr(stdin),
+			uintptr(unsafe.Pointer(&record)),
+			1,
+			uintptr(unsafe.Pointer(&read)),
+		)
+		if r == 0 {
+			return "", fmt.Errorf("ReadConsoleInputW failed: %v", err)
+		}
+		if read == 0 {
+			continue
+		}
+
+		if record.EventType != 1 {
+			continue
+		}
+
+		keyEvent := (*KEY_EVENT_RECORD)(unsafe.Pointer(&record.Event[0]))
+		if keyEvent.BKeyDown == 0 {
+			continue
+		}
+
+		vk := keyEvent.WVirtualKeyCode
+		char := rune(keyEvent.UnicodeChar)
+
+		if vk == 0x0D { // VK_RETURN
+			fmt.Println()
+			return string(line), nil
+		}
+
+		if vk == 0x08 { // VK_BACK
+			if len(line) > 0 {
+				line = line[:len(line)-1]
+				fmt.Print("\b \b")
+			}
+			continue
+		}
+
+		if vk == 0x1B { // VK_ESCAPE
+			for i := 0; i < len(line); i++ {
+				fmt.Print("\b \b")
+			}
+			fmt.Print(defaultValue)
+			return defaultValue, nil
+		}
+
+		if char >= 32 {
+			line = append(line, char)
+			fmt.Print(string(char))
+		}
+	}
 }

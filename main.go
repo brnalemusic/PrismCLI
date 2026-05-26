@@ -14,10 +14,12 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/mattn/go-runewidth"
 	"golang.org/x/sys/windows"
+	"golang.org/x/term"
 )
 
-const Version = "0.2.1"
+const Version = "0.3.0"
 
 const SystemPrompt = `You are Prism, a highly capable local AI agent operating in command-line (CLI) mode on Windows.
 Your core philosophy is direct local action, total privacy, and native integration with the operating system.
@@ -404,8 +406,9 @@ func drawModelMenu(selectedIndex int, activeModel string) {
 	fmt.Print("\r\033[K")
 	borderCol := "\033[38;5;129m" // Magenta/Purple
 	resetCol := "\033[0m"
+	width := getBoxWidth()
 
-	fmt.Println(borderCol + drawBoxHeader("╔", "═", " SELECT AI MODEL ", 60, "╗") + resetCol)
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " SELECT AI MODEL ", width, "╗") + resetCol)
 	for i, modelID := range SelectableModels {
 		friendlyName := ModelFriendlyNames[modelID]
 		marker := "[ ]"
@@ -419,12 +422,12 @@ func drawModelMenu(selectedIndex int, activeModel string) {
 		} else {
 			line = fmt.Sprintf("    %s %s (%s)", marker, friendlyName, modelID)
 		}
-		fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(line, 60), borderCol, resetCol)
+		fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(line, width), borderCol, resetCol)
 	}
-	fmt.Println(borderCol + drawBoxLine("╠", "═", 60, "╣") + resetCol)
+	fmt.Println(borderCol + drawBoxLine("╠", "═", width, "╣") + resetCol)
 	hintLine := "  Use ↑/↓ to navigate, Enter to confirm, Esc to cancel"
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(hintLine, 60), borderCol, resetCol)
-	fmt.Println(borderCol + drawBoxLine("╚", "═", 60, "╝") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(hintLine, width), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╚", "═", width, "╝") + resetCol)
 }
 
 func clearLines(n int) {
@@ -648,11 +651,26 @@ func ReadLine(cfg *Config, promptFn func() string, thinkMode *bool, activeSearch
 func padVisual(str string, length int) string {
 	re := regexp.MustCompile(`\033\[[0-9;]*[a-zA-Z]`)
 	plain := re.ReplaceAllString(str, "")
-	visualLen := len([]rune(plain))
+	visualLen := runewidth.StringWidth(plain)
 	if visualLen >= length {
 		return str
 	}
 	return str + strings.Repeat(" ", length-visualLen)
+}
+
+func getBoxWidth() int {
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		width = 80
+	}
+	boxW := width - 4
+	if boxW > 80 {
+		boxW = 80
+	}
+	if boxW < 40 {
+		boxW = 40
+	}
+	return boxW
 }
 
 // drawBoxLine creates a simple filled box line.
@@ -675,7 +693,8 @@ func drawBoxHeader(left, fill string, text string, length int, right string) str
 func drawHelpBox() {
 	borderCol := "\033[38;5;244m" // Gray
 	resetCol := "\033[0m"
-	fmt.Println(borderCol + drawBoxHeader("┌", "─", " COMMANDS & UTILITIES ", 70, "┐") + resetCol)
+	width := getBoxWidth()
+	fmt.Println(borderCol + drawBoxHeader("┌", "─", " COMMANDS & UTILITIES ", width, "┐") + resetCol)
 
 	commandsList := []struct {
 		cmd  string
@@ -694,9 +713,9 @@ func drawHelpBox() {
 
 	for _, item := range commandsList {
 		line := fmt.Sprintf("  \033[1;34m%-18s\033[0m - %s", item.cmd, item.desc)
-		fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(line, 70), borderCol, resetCol)
+		fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(line, width), borderCol, resetCol)
 	}
-	fmt.Println(borderCol + drawBoxLine("└", "─", 70, "┘") + resetCol)
+	fmt.Println(borderCol + drawBoxLine("└", "─", width, "┘") + resetCol)
 }
 
 // updateStateAndRedraw clears the typed command on the current line and updates the active state box.
@@ -723,6 +742,7 @@ func updateStateAndRedraw(cfg *Config, isWelcomeScreen bool, thinkMode, activeSe
 func drawActiveStateBox(cfg *Config, thinkMode, activeSearch, deepResearch bool) {
 	borderCol := "\033[38;5;129m" // Magenta/Purple
 	resetCol := "\033[0m"
+	width := getBoxWidth()
 
 	thinkStatus := "\033[1;31m[OFF]\033[0m"
 	if thinkMode {
@@ -742,13 +762,13 @@ func drawActiveStateBox(cfg *Config, thinkMode, activeSearch, deepResearch bool)
 		modelName = cfg.DefaultModel
 	}
 
-	fmt.Println(borderCol + drawBoxHeader("╔", "═", " CONFIGURATION & ACTIVE STATE ", 70, "╗") + resetCol)
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " CONFIGURATION & ACTIVE STATE ", width, "╗") + resetCol)
 	modelLine := fmt.Sprintf("  Model: \033[1;36m%s\033[0m", modelName)
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(modelLine, 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(modelLine, width), borderCol, resetCol)
 
 	modesLine := fmt.Sprintf("  Modes: Thinking: %s   Search: %s   Deep Research: %s", thinkStatus, searchStatus, deepStatus)
-	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(modesLine, 70), borderCol, resetCol)
-	fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(modesLine, width), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╚", "═", width, "╝") + resetCol)
 }
 
 // drawWelcomeScreen draws the ASCII logo, active settings box, and help box.
@@ -769,4 +789,7 @@ func drawWelcomeScreen(cfg *Config, thinkMode, activeSearch, deepResearch bool) 
 	// Help box
 	drawHelpBox()
 }
+
+
+
 

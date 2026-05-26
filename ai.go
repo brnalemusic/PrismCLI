@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
+	"golang.org/x/term"
 	"google.golang.org/genai"
 )
 
@@ -850,7 +854,7 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 		// Configure Think Mode / Temperature depending on action
 		if thinkMode {
 			genConfig.ThinkingConfig = &genai.ThinkingConfig{
-				IncludeThoughts: true,
+				IncludeThoughts: false,
 				ThinkingLevel:   genai.ThinkingLevel("HIGH"),
 			}
 		} else {
@@ -866,14 +870,17 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 		// Execute API call
 		// We support streaming responses directly to stdout
 		fmt.Printf("\n\033[1;35m🔮 %s\033[0m\n", ModelFriendlyNames[modelName])
+
+		renderer := NewRenderer()
 		
 		stream := client.Models.GenerateContentStream(ctx, modelName, contents, genConfig)
 		
-		thoughtWriter := NewThoughtWriter(thinkMode)
-		filter := NewStreamFilter(thinkMode, thoughtWriter)
+		thoughtWriter := NewThoughtWriter(false, renderer)
+		filter := NewStreamFilter(false, thoughtWriter, renderer)
 		var accumulatedThoughts strings.Builder
 		var lastToolCallPart *genai.Part
 		var apiError error
+		writingToolCallPrinted := false
 
 		for result, err := range stream {
 			if err != nil {
@@ -887,6 +894,10 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 					for _, part := range candidate.Content.Parts {
 						if part.FunctionCall != nil {
 							lastToolCallPart = part
+							if !writingToolCallPrinted {
+								PrintWritingToolCallScreen()
+								writingToolCallPrinted = true
+							}
 						} else if part.Thought {
 							accumulatedThoughts.WriteString(part.Text)
 							thoughtWriter.Write(part.Text)
@@ -896,9 +907,11 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 					}
 				}
 			}
+			renderer.FlushWriter()
 		}
 		filter.Flush()
 		thoughtWriter.Close()
+		renderer.ResetColumn()
 
 		// Fallback mechanism
 		if apiError != nil {
@@ -998,19 +1011,83 @@ type StreamFilter struct {
 	thoughtWriter *ThoughtWriter
 	thoughtBuf    strings.Builder
 	textBuf       strings.Builder
-	mdColorizer   *MarkdownColorizer
+	renderer      *Renderer
+	prevLineCount int
 }
 
-func NewStreamFilter(thinkMode bool, tw *ThoughtWriter) *StreamFilter {
+func NewStreamFilter(thinkMode bool, tw *ThoughtWriter, r *Renderer) *StreamFilter {
 	return &StreamFilter{
 		thinkMode:     thinkMode,
 		thoughtWriter: tw,
-		mdColorizer:   NewMarkdownColorizer(),
+		renderer:      r,
 	}
+}
+
+func (sf *StreamFilter) render() {
+	// 1. Get terminal height
+	termHeight := 24
+	if sf.renderer != nil {
+		sf.renderer.RefreshWidth()
+		_, height, err := term.GetSize(int(os.Stdout.Fd()))
+		if err == nil && height > 0 {
+			termHeight = height
+		}
+	}
+
+	// 2. Render accumulated text using a fresh MarkdownColorizer
+	var buf bytes.Buffer
+	r := NewRendererWriter(&buf)
+	if sf.renderer != nil {
+		r.maxWidth = sf.renderer.maxWidth
+		r.contentWidth = sf.renderer.contentWidth
+		r.leftPad = sf.renderer.leftPad
+		r.linePrefix = sf.renderer.linePrefix
+		r.linePrefixWidth = sf.renderer.linePrefixWidth
+	}
+	r.RefreshWidth()
+
+	c := NewMarkdownColorizer(r)
+	c.Print(sf.textBuf.String())
+	c.Flush()
+
+	rendered := buf.String()
+
+	// 3. Split rendered text into lines
+	lines := strings.Split(rendered, "\n")
+	numLines := len(lines)
+
+	limit := termHeight - 1
+	if limit < 1 {
+		limit = 1
+	}
+
+	var linesToPrint []string
+	if numLines > limit {
+		linesToPrint = lines[numLines-limit:]
+	} else {
+		linesToPrint = lines
+	}
+
+	// 4. Move up and clear previous output
+	if sf.prevLineCount > 0 {
+		prevMove := sf.prevLineCount - 1
+		if prevMove < 0 {
+			prevMove = 0
+		}
+		fmt.Print("\r" + strings.Repeat("\033[F", prevMove) + "\033[J")
+	}
+
+	// 5. Print new lines
+	outText := strings.Join(linesToPrint, "\n")
+	fmt.Print(outText)
+
+	// 6. Update prevLineCount
+	sf.prevLineCount = len(linesToPrint)
 }
 
 func (sf *StreamFilter) Feed(chunk string) {
 	sf.buffer += chunk
+	hasNewText := false
 	for {
 		if !sf.inThought {
 			// Look for start of thought tag
@@ -1025,8 +1102,8 @@ func (sf *StreamFilter) Feed(chunk string) {
 						// Print everything except the partial prefix
 						toPrint := sf.buffer[:len(sf.buffer)-i]
 						if len(toPrint) > 0 {
-							sf.mdColorizer.Print(toPrint)
 							sf.textBuf.WriteString(toPrint)
+							hasNewText = true
 							sf.buffer = sf.buffer[len(sf.buffer)-i:]
 						}
 						partialPrefix = true
@@ -1035,8 +1112,10 @@ func (sf *StreamFilter) Feed(chunk string) {
 				}
 				if !partialPrefix {
 					// Print all and clear buffer
-					sf.mdColorizer.Print(sf.buffer)
-					sf.textBuf.WriteString(sf.buffer)
+					if len(sf.buffer) > 0 {
+						sf.textBuf.WriteString(sf.buffer)
+						hasNewText = true
+					}
 					sf.buffer = ""
 				}
 				break
@@ -1044,8 +1123,8 @@ func (sf *StreamFilter) Feed(chunk string) {
 				// Print everything before "<thought>"
 				before := sf.buffer[:idx]
 				if len(before) > 0 {
-					sf.mdColorizer.Print(before)
 					sf.textBuf.WriteString(before)
+					hasNewText = true
 				}
 				sf.inThought = true
 				sf.buffer = sf.buffer[idx+len("<thought>"):]
@@ -1086,13 +1165,17 @@ func (sf *StreamFilter) Feed(chunk string) {
 			}
 		}
 	}
+	if hasNewText {
+		sf.render()
+	}
 }
 
 func (sf *StreamFilter) Flush() {
+	hasNewText := false
 	if len(sf.buffer) > 0 {
 		if !sf.inThought {
-			sf.mdColorizer.Print(sf.buffer)
 			sf.textBuf.WriteString(sf.buffer)
+			hasNewText = true
 		} else {
 			sf.thoughtWriter.Write(sf.buffer)
 			sf.thoughtWriter.Close()
@@ -1100,7 +1183,9 @@ func (sf *StreamFilter) Flush() {
 		}
 		sf.buffer = ""
 	}
-	sf.mdColorizer.Flush()
+	if hasNewText || sf.prevLineCount > 0 {
+		sf.render()
+	}
 }
 
 func (sf *StreamFilter) Text() string {
@@ -1111,13 +1196,13 @@ func (sf *StreamFilter) Text() string {
 type ThoughtWriter struct {
 	started   bool
 	thinkMode bool
-	lastWasNL bool
+	renderer  *Renderer
 }
 
-func NewThoughtWriter(thinkMode bool) *ThoughtWriter {
+func NewThoughtWriter(thinkMode bool, r *Renderer) *ThoughtWriter {
 	return &ThoughtWriter{
 		thinkMode: thinkMode,
-		lastWasNL: true,
+		renderer:  r,
 	}
 }
 
@@ -1126,92 +1211,154 @@ func (tw *ThoughtWriter) Write(text string) {
 		return
 	}
 	if !tw.started {
-		fmt.Println() // Empty line before thoughts block
-		fmt.Println("\033[33m┌── Thoughts\033[0m")
+		tw.renderer.ForceBreak()
+		tw.renderer.WriteANSI("\033[33m")
+		width := tw.renderer.GetContentWidth()
+		rem := width - 14
+		if rem < 0 {
+			rem = 0
+		}
+		border := "┌── Thoughts " + strings.Repeat("─", rem) + "┐"
+		tw.renderer.WriteString(border)
+		tw.renderer.WriteANSI("\033[0m")
+		tw.renderer.ForceBreak()
+
+		tw.renderer.SetLinePrefix("\033[90m│ \033[0m", 2)
 		tw.started = true
-		tw.lastWasNL = true
 	}
 
-	for _, r := range text {
-		if tw.lastWasNL {
-			fmt.Print("\033[90m│\033[0m ")
-			tw.lastWasNL = false
-		}
-		if r == '\n' {
-			fmt.Print("\n")
-			tw.lastWasNL = true
-		} else {
-			fmt.Print(string(r))
-		}
-	}
+	tw.renderer.WriteString(text)
 }
 
 func (tw *ThoughtWriter) Close() {
 	if tw.thinkMode && tw.started {
-		if !tw.lastWasNL {
-			fmt.Println()
-		}
-		fmt.Println("\033[33m└──\033[0m")
-		fmt.Println() // Empty line after thoughts block
+		tw.renderer.ForceBreak()
+		tw.renderer.SetLinePrefix("", 0)
+
+		tw.renderer.WriteANSI("\033[33m")
+		width := tw.renderer.GetContentWidth()
+		border := "└" + strings.Repeat("─", width-2) + "┘"
+		tw.renderer.WriteString(border)
+		tw.renderer.WriteANSI("\033[0m")
+		tw.renderer.ForceBreak()
+
 		tw.started = false
-		tw.lastWasNL = true
 	}
 }
 
-// PrintToolStart prints the opening of the tool box and arguments.
-func PrintToolStart(name string, args map[string]interface{}) {
-	borderCol := "\033[38;5;242m" // Gray
-	resetCol := "\033[0m"
-	nameCol := "\033[1;36m"      // Cyan
+var (
+	currentToolName string
+	currentToolArgs map[string]interface{}
+)
+
+// formatArgsForBox formats map arguments for neat box printing.
+func formatArgsForBox(args map[string]interface{}) []string {
+	var lines []string
+	if len(args) == 0 {
+		return []string{"  (No arguments)"}
+	}
 	
-	// Ensure an empty line margin before the tool box
-	fmt.Println()
-	fmt.Println(borderCol + drawBoxLine("┌", "─", 70, "┐") + resetCol)
+	// Extract and sort keys for deterministic order
+	var keys []string
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	
-	lineTool := fmt.Sprintf("  Tool:      %s%s%s", nameCol, name, resetCol)
-	fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(lineTool, 70), borderCol, resetCol)
-	
-	if len(args) > 0 {
-		fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual("  Arguments:", 70), borderCol, resetCol)
-		for k, v := range args {
-			valStr := fmt.Sprintf("%v", v)
-			if len(valStr) > 50 {
-				valStr = valStr[:47] + "..."
+	for _, k := range keys {
+		v := args[k]
+		var valStr string
+		switch val := v.(type) {
+		case string:
+			// Replace newlines with escaped \n
+			escaped := strings.ReplaceAll(val, "\n", "\\n")
+			escaped = strings.ReplaceAll(escaped, "\r", "")
+			if len(escaped) > 60 {
+				valStr = fmt.Sprintf("%q", escaped[:57]+"...")
+			} else {
+				valStr = fmt.Sprintf("%q", escaped)
 			}
-			valStr = strings.ReplaceAll(valStr, "\n", "\\n")
-			valStr = strings.ReplaceAll(valStr, "\r", "\\r")
-			
-			lineArg := fmt.Sprintf("    %s: %s", k, valStr)
-			fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(lineArg, 70), borderCol, resetCol)
+		default:
+			valStr = fmt.Sprintf("%v", val)
 		}
+		lines = append(lines, fmt.Sprintf("    %s: %s", k, valStr))
 	}
-	
-	fmt.Println(borderCol + drawBoxLine("├", "─", 70, "┤") + resetCol)
-	lineStatus := "  Status:    \033[33mRUNNING...\033[0m"
-	fmt.Printf("%s│%s%s%s│%s\r", borderCol, resetCol, padVisual(lineStatus, 70), borderCol, resetCol)
+	return lines
 }
 
-// PrintToolEnd overwrites the status line and closes the tool box.
+// PrintWritingToolCallScreen displays a beautiful orange header and status box when a tool call starts.
+func PrintWritingToolCallScreen() {
+	width := getBoxWidth()
+	borderCol := "\033[38;5;208m" // Orange
+	resetCol := "\033[0m"
+	textCol := "\033[1;33m" // Yellow text
+	
+	fmt.Println()
+	fmt.Println(borderCol + drawBoxHeader("┌", "─", " WRITING TOOL CALL ", width, "┐") + resetCol)
+	line := "  🤖 " + textCol + "AI is formulating and writing a tool call..." + resetCol
+	fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(line, width), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("└", "─", width, "┘") + resetCol)
+	fmt.Println()
+}
+
+// PrintToolStart prints a minimal running indicator and saves details.
+func PrintToolStart(name string, args map[string]interface{}) {
+	currentToolName = name
+	currentToolArgs = args
+
+	nameCol := "\033[1;36m"  // Cyan
+	resetCol := "\033[0m"
+	fmt.Printf("  %s⚙ Running tool:%s %s... ", resetCol, nameCol, name)
+	fmt.Printf("\033[33mRUNNING...\033[0m\r")
+}
+
+// PrintToolEnd overwrites the RUNNING indicator with the final styled visual box.
 func PrintToolEnd(success bool, resultDetails string) {
-	borderCol := "\033[38;5;242m" // Gray
+	// Clear the RUNNING indicator line
+	fmt.Print("\r\033[K")
+
+	width := getBoxWidth()
+	borderCol := "\033[38;5;33m" // Neon/Cool Blue border
 	resetCol := "\033[0m"
 	
+	// Print top border
+	fmt.Println(borderCol + drawBoxHeader("┌", "─", " TOOL CALL EXECUTED ", width, "┐") + resetCol)
+	
+	// Tool Name line
+	toolLine := fmt.Sprintf("  Tool: \033[1;36m%s\033[0m", currentToolName)
+	fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(toolLine, width), borderCol, resetCol)
+	
+	// Arguments separator
+	fmt.Println(borderCol + drawBoxLine("├", "─", width, "┤") + resetCol)
+	
+	// Arguments lines
+	argLines := formatArgsForBox(currentToolArgs)
+	for _, argLine := range argLines {
+		fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(argLine, width), borderCol, resetCol)
+	}
+	
+	// Status separator
+	fmt.Println(borderCol + drawBoxLine("├", "─", width, "┤") + resetCol)
+	
+	// Status line
 	statusStr := "\033[1;32mSUCCESS\033[0m"
 	if !success {
 		statusStr = "\033[1;31mFAILED\033[0m"
 	}
-	
-	fmt.Print("\r") // Return to beginning of line
-	
-	var lineStatus string
 	if resultDetails != "" {
-		lineStatus = fmt.Sprintf("  Status:    %s (%s)", statusStr, resultDetails)
-	} else {
-		lineStatus = fmt.Sprintf("  Status:    %s", statusStr)
+		// Truncate details if they are too long for one line
+		cleanDetails := resultDetails
+		if len(cleanDetails) > 50 {
+			cleanDetails = cleanDetails[:47] + "..."
+		}
+		statusStr += fmt.Sprintf(" (%s)", cleanDetails)
 	}
-	fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(lineStatus, 70), borderCol, resetCol)
-	fmt.Println(borderCol + drawBoxLine("└", "─", 70, "┘") + resetCol)
-	fmt.Println() // Ensure an empty line margin after the tool box
+	statusLine := fmt.Sprintf("  Status: %s", statusStr)
+	fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(statusLine, width), borderCol, resetCol)
+	
+	// Bottom border
+	fmt.Println(borderCol + drawBoxLine("└", "─", width, "┘") + resetCol)
+	fmt.Println()
 }
 
 // parseToolResult extracts success status and details from a tool's output interface.
