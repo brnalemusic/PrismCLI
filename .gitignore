@@ -3,3 +3,4 @@ prism.exe
 prism.exe~
 *prism*.exe*
 update-version.ps1
+*_test.go

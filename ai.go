@@ -704,9 +704,9 @@ func CallLocalTool(name string, args map[string]interface{}) (interface{}, error
 		if val, ok := args["userGeminiKey"].(string); ok && val != "" {
 			err := config.SetAPIKey(val)
 			if err != nil {
-				return map[string]interface{}{"status": "error", "message": "erro ao salvar chave de API: " + err.Error()}, nil
+				return map[string]interface{}{"status": "error", "message": "error saving API key: " + err.Error()}, nil
 			}
-			changed = append(changed, "userGeminiKey: [ATUALIZADA]")
+			changed = append(changed, "userGeminiKey: [UPDATED]")
 		}
 		if val, ok := args["username"].(string); ok && val != "" {
 			config.Username = val
@@ -714,15 +714,15 @@ func CallLocalTool(name string, args map[string]interface{}) (interface{}, error
 		}
 
 		if len(changed) == 0 {
-			return map[string]interface{}{"status": "success", "message": "Nenhuma configuração fornecida para alteração."}, nil
+			return map[string]interface{}{"status": "success", "message": "No configuration provided for change."}, nil
 		}
 
 		err = SaveConfig(config)
 		if err != nil {
-			return map[string]interface{}{"status": "error", "message": "erro ao salvar configurações: " + err.Error()}, nil
+			return map[string]interface{}{"status": "error", "message": "error saving configuration: " + err.Error()}, nil
 		}
 
-		msg := fmt.Sprintf("Configurações do Prism atualizadas com sucesso:\n%s", strings.Join(changed, "\n"))
+		msg := fmt.Sprintf("Prism configuration updated successfully:\n%s", strings.Join(changed, "\n"))
 		return map[string]interface{}{"status": "success", "message": msg}, nil
 
 	case "run_subagents":
@@ -741,19 +741,19 @@ func CallLocalTool(name string, args map[string]interface{}) (interface{}, error
 		}
 
 		RunSubagentsSim(quantity, prompts)
-		return map[string]interface{}{"status": "success", "message": "Subagentes concluíram suas tarefas com sucesso!"}, nil
+		return map[string]interface{}{"status": "success", "message": "Subagents completed their tasks successfully!"}, nil
 
 	case "send_group_message":
-		return nil, fmt.Errorf("erro: send_group_message só pode ser usado por subagentes")
+		return nil, fmt.Errorf("error: send_group_message can only be used by subagents")
 
 	case "read_group_messages":
-		return nil, fmt.Errorf("erro: read_group_messages só pode ser usado por subagentes")
+		return nil, fmt.Errorf("error: read_group_messages can only be used by subagents")
 
 	case "wait_for_updates":
-		return nil, fmt.Errorf("erro: wait_for_updates só pode ser usado por subagentes")
+		return nil, fmt.Errorf("error: wait_for_updates can only be used by subagents")
 	}
 
-	return nil, fmt.Errorf("ferramenta desconhecida: %s", name)
+	return nil, fmt.Errorf("unknown tool: %s", name)
 }
 
 func mapModelKeyToAPI(key string) string {
@@ -817,15 +817,15 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 	// Visual indicators for terminal
 	hasIndicators := false
 	if thinkMode {
-		fmt.Print("\033[33m[Thinking...]\033[0m ")
+		fmt.Print("\033[33m💭 Thinking...\033[0m ")
 		hasIndicators = true
 	}
 	if activeSearch {
-		fmt.Print("\033[32m[Active Search]\033[0m ")
+		fmt.Print("\033[32m🔍 Active Search...\033[0m ")
 		hasIndicators = true
 	}
 	if deepResearch {
-		fmt.Print("\033[36m[Deep Research]\033[0m ")
+		fmt.Print("\033[36m🧪 Deep Research...\033[0m ")
 		hasIndicators = true
 	}
 	if hasIndicators {
@@ -865,11 +865,12 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 
 		// Execute API call
 		// We support streaming responses directly to stdout
-		fmt.Printf("\n\033[34m[%s]\033[0m\n", ModelFriendlyNames[modelName])
+		fmt.Printf("\n\033[1;35m🔮 %s\033[0m\n", ModelFriendlyNames[modelName])
 		
 		stream := client.Models.GenerateContentStream(ctx, modelName, contents, genConfig)
 		
-		filter := NewStreamFilter(thinkMode)
+		thoughtWriter := NewThoughtWriter(thinkMode)
+		filter := NewStreamFilter(thinkMode, thoughtWriter)
 		var accumulatedThoughts strings.Builder
 		var lastToolCallPart *genai.Part
 		var apiError error
@@ -888,9 +889,7 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 							lastToolCallPart = part
 						} else if part.Thought {
 							accumulatedThoughts.WriteString(part.Text)
-							if thinkMode {
-								fmt.Print("\033[33m" + part.Text + "\033[0m")
-							}
+							thoughtWriter.Write(part.Text)
 						} else if part.Text != "" {
 							filter.Feed(part.Text)
 						}
@@ -899,6 +898,7 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 			}
 		}
 		filter.Flush()
+		thoughtWriter.Close()
 
 		// Fallback mechanism
 		if apiError != nil {
@@ -924,13 +924,14 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 		// If the model requested a tool execution
 		if lastToolCallPart != nil && lastToolCallPart.FunctionCall != nil {
 			fnCall := lastToolCallPart.FunctionCall
-			fmt.Printf("\n\n\033[32m[Tool Requested: %s]\033[0m\n", fnCall.Name)
 			
 			// Convert Args map[string]interface{}
 			args := make(map[string]interface{})
 			for k, v := range fnCall.Args {
 				args[k] = v
 			}
+
+			PrintToolStart(fnCall.Name, args)
 
 			// Add the assistant's tool call response to the conversation log
 			contents = append(contents, &genai.Content{
@@ -973,7 +974,8 @@ func GenerateResponse(ctx context.Context, cfg *Config, messages []ChatMessage, 
 				},
 			})
 
-			fmt.Printf("\n\033[32m[Tool Executed Successfully! Continuing flow...]\033[0m\n")
+			success, details := parseToolResult(toolResult)
+			PrintToolEnd(success, details)
 			continue // Run the loop again with the new context containing the tool result
 		}
 
@@ -989,21 +991,21 @@ func float32Ptr(f float64) *float32 {
 	val := float32(f)
 	return &val
 }
-
-// StreamFilter is a streaming tag filter for extracting <thought>...</thought> tags in real-time.
 type StreamFilter struct {
-	buffer      string
-	inThought   bool
-	thinkMode   bool
-	thoughtBuf  strings.Builder
-	textBuf     strings.Builder
-	mdColorizer *MarkdownColorizer
+	buffer        string
+	inThought     bool
+	thinkMode     bool
+	thoughtWriter *ThoughtWriter
+	thoughtBuf    strings.Builder
+	textBuf       strings.Builder
+	mdColorizer   *MarkdownColorizer
 }
 
-func NewStreamFilter(thinkMode bool) *StreamFilter {
+func NewStreamFilter(thinkMode bool, tw *ThoughtWriter) *StreamFilter {
 	return &StreamFilter{
-		thinkMode:   thinkMode,
-		mdColorizer: NewMarkdownColorizer(),
+		thinkMode:     thinkMode,
+		thoughtWriter: tw,
+		mdColorizer:   NewMarkdownColorizer(),
 	}
 }
 
@@ -1047,9 +1049,6 @@ func (sf *StreamFilter) Feed(chunk string) {
 				}
 				sf.inThought = true
 				sf.buffer = sf.buffer[idx+len("<thought>"):]
-				if sf.thinkMode {
-					fmt.Print("\n\033[33m[Thought: ")
-				}
 			}
 		} else {
 			// Look for end of thought tag
@@ -1062,9 +1061,7 @@ func (sf *StreamFilter) Feed(chunk string) {
 					if strings.HasSuffix(sf.buffer, tag[:i]) {
 						toCollect := sf.buffer[:len(sf.buffer)-i]
 						if len(toCollect) > 0 {
-							if sf.thinkMode {
-								fmt.Print(toCollect)
-							}
+							sf.thoughtWriter.Write(toCollect)
 							sf.thoughtBuf.WriteString(toCollect)
 							sf.buffer = sf.buffer[len(sf.buffer)-i:]
 						}
@@ -1073,9 +1070,7 @@ func (sf *StreamFilter) Feed(chunk string) {
 					}
 				}
 				if !partialPrefix {
-					if sf.thinkMode {
-						fmt.Print(sf.buffer)
-					}
+					sf.thoughtWriter.Write(sf.buffer)
 					sf.thoughtBuf.WriteString(sf.buffer)
 					sf.buffer = ""
 				}
@@ -1083,10 +1078,8 @@ func (sf *StreamFilter) Feed(chunk string) {
 			} else {
 				// Collect everything before "</thought>"
 				thoughtContent := sf.buffer[:idx]
-				if sf.thinkMode {
-					fmt.Print(thoughtContent)
-					fmt.Print("]\033[0m\n") // Close thought block style
-				}
+				sf.thoughtWriter.Write(thoughtContent)
+				sf.thoughtWriter.Close()
 				sf.thoughtBuf.WriteString(thoughtContent)
 				sf.inThought = false
 				sf.buffer = sf.buffer[idx+len("</thought>"):]
@@ -1101,10 +1094,8 @@ func (sf *StreamFilter) Flush() {
 			sf.mdColorizer.Print(sf.buffer)
 			sf.textBuf.WriteString(sf.buffer)
 		} else {
-			if sf.thinkMode {
-				fmt.Print(sf.buffer)
-				fmt.Print("]\033[0m\n")
-			}
+			sf.thoughtWriter.Write(sf.buffer)
+			sf.thoughtWriter.Close()
 			sf.thoughtBuf.WriteString(sf.buffer)
 		}
 		sf.buffer = ""
@@ -1114,4 +1105,137 @@ func (sf *StreamFilter) Flush() {
 
 func (sf *StreamFilter) Text() string {
 	return sf.textBuf.String()
+}
+
+// ThoughtWriter handles formatting and writing thoughts stream with a gray left border.
+type ThoughtWriter struct {
+	started   bool
+	thinkMode bool
+	lastWasNL bool
+}
+
+func NewThoughtWriter(thinkMode bool) *ThoughtWriter {
+	return &ThoughtWriter{
+		thinkMode: thinkMode,
+		lastWasNL: true,
+	}
+}
+
+func (tw *ThoughtWriter) Write(text string) {
+	if !tw.thinkMode || text == "" {
+		return
+	}
+	if !tw.started {
+		fmt.Println() // Empty line before thoughts block
+		fmt.Println("\033[33m┌── Thoughts\033[0m")
+		tw.started = true
+		tw.lastWasNL = true
+	}
+
+	for _, r := range text {
+		if tw.lastWasNL {
+			fmt.Print("\033[90m│\033[0m ")
+			tw.lastWasNL = false
+		}
+		if r == '\n' {
+			fmt.Print("\n")
+			tw.lastWasNL = true
+		} else {
+			fmt.Print(string(r))
+		}
+	}
+}
+
+func (tw *ThoughtWriter) Close() {
+	if tw.thinkMode && tw.started {
+		if !tw.lastWasNL {
+			fmt.Println()
+		}
+		fmt.Println("\033[33m└──\033[0m")
+		fmt.Println() // Empty line after thoughts block
+		tw.started = false
+		tw.lastWasNL = true
+	}
+}
+
+// PrintToolStart prints the opening of the tool box and arguments.
+func PrintToolStart(name string, args map[string]interface{}) {
+	borderCol := "\033[38;5;242m" // Gray
+	resetCol := "\033[0m"
+	nameCol := "\033[1;36m"      // Cyan
+	
+	// Ensure an empty line margin before the tool box
+	fmt.Println()
+	fmt.Println(borderCol + drawBoxLine("┌", "─", 70, "┐") + resetCol)
+	
+	lineTool := fmt.Sprintf("  Tool:      %s%s%s", nameCol, name, resetCol)
+	fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(lineTool, 70), borderCol, resetCol)
+	
+	if len(args) > 0 {
+		fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual("  Arguments:", 70), borderCol, resetCol)
+		for k, v := range args {
+			valStr := fmt.Sprintf("%v", v)
+			if len(valStr) > 50 {
+				valStr = valStr[:47] + "..."
+			}
+			valStr = strings.ReplaceAll(valStr, "\n", "\\n")
+			valStr = strings.ReplaceAll(valStr, "\r", "\\r")
+			
+			lineArg := fmt.Sprintf("    %s: %s", k, valStr)
+			fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(lineArg, 70), borderCol, resetCol)
+		}
+	}
+	
+	fmt.Println(borderCol + drawBoxLine("├", "─", 70, "┤") + resetCol)
+	lineStatus := "  Status:    \033[33mRUNNING...\033[0m"
+	fmt.Printf("%s│%s%s%s│%s\r", borderCol, resetCol, padVisual(lineStatus, 70), borderCol, resetCol)
+}
+
+// PrintToolEnd overwrites the status line and closes the tool box.
+func PrintToolEnd(success bool, resultDetails string) {
+	borderCol := "\033[38;5;242m" // Gray
+	resetCol := "\033[0m"
+	
+	statusStr := "\033[1;32mSUCCESS\033[0m"
+	if !success {
+		statusStr = "\033[1;31mFAILED\033[0m"
+	}
+	
+	fmt.Print("\r") // Return to beginning of line
+	
+	var lineStatus string
+	if resultDetails != "" {
+		lineStatus = fmt.Sprintf("  Status:    %s (%s)", statusStr, resultDetails)
+	} else {
+		lineStatus = fmt.Sprintf("  Status:    %s", statusStr)
+	}
+	fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(lineStatus, 70), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("└", "─", 70, "┘") + resetCol)
+	fmt.Println() // Ensure an empty line margin after the tool box
+}
+
+// parseToolResult extracts success status and details from a tool's output interface.
+func parseToolResult(result interface{}) (bool, string) {
+	if result == nil {
+		return true, ""
+	}
+	m, ok := result.(map[string]interface{})
+	if !ok {
+		return true, fmt.Sprintf("%v", result)
+	}
+	
+	if status, ok := m["status"].(string); ok {
+		msg, _ := m["message"].(string)
+		return status == "success", msg
+	}
+	
+	if ec, ok := m["exitCode"].(int); ok {
+		success := ec == 0
+		details := fmt.Sprintf("exit code: %d", ec)
+		if trunc, ok := m["truncated"].(bool); ok && trunc {
+			details += ", output truncated"
+		}
+		return success, details
+	}
+	return true, ""
 }

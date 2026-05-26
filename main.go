@@ -14,7 +14,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/pterm/pterm"
 	"golang.org/x/sys/windows"
 )
 
@@ -38,6 +37,13 @@ When interacting:
 - Always follow the tools' security safeguards.`
 
 func main() {
+	// Set Windows console to UTF-8
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	setConsoleCP := kernel32.NewProc("SetConsoleCP")
+	setConsoleOutputCP := kernel32.NewProc("SetConsoleOutputCP")
+	_, _, _ = setConsoleCP.Call(65001)
+	_, _, _ = setConsoleOutputCP.Call(65001)
+
 	// CLI Flags
 	searchFlag := flag.Bool("search", false, "Start chat with Active Search enabled")
 	deepFlag := flag.Bool("deep", false, "Start chat with Extended Search (Deep Research) enabled")
@@ -55,6 +61,11 @@ func main() {
 	if err != nil {
 		fmt.Printf("Error loading configuration: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Check for updates
+	if !*versionFlag {
+		CheckAndPerformUpdate(&cfg)
 	}
 
 	// Trigger Setup Wizard if config flag is passed or API key is missing
@@ -104,27 +115,6 @@ func main() {
 }
 
 func runChatREPL(cfg *Config, startSearch, startDeep bool) {
-	pterm.DefaultHeader.WithFullWidth().WithBackgroundStyle(pterm.NewStyle(pterm.BgCyan)).WithMargin(10).Printf("PRISM CLI - v%s", Version)
-	
-	pterm.Info.Prefix = pterm.Prefix{
-		Text:  "TIPS",
-		Style: pterm.NewStyle(pterm.BgLightBlue, pterm.FgBlack),
-	}
-	pterm.Info.Println("Type your messages. Supported commands:")
-	
-	commands := [][]string{
-		{"/search", "Toggles active web search"},
-		{"/deep or /research", "Toggles deep research"},
-		{"/youtube <term>", "Opens video directly in browser"},
-		{"/swarm <goal>", "Executes agents in swarm"},
-		{"/config", "Reconfigures the API key"},
-		{"/clear", "Clears the screen and chat history"},
-		{"/exit or /quit", "Exits the program"},
-	}
-	
-	pterm.DefaultTable.WithHasHeader(false).WithData(commands).Render()
-	fmt.Println()
-
 	sessionID := fmt.Sprintf("chat_%d", time.Now().Unix())
 	session := ChatSession{
 		ID:       sessionID,
@@ -136,12 +126,14 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 	deepResearch := startDeep
 	thinkMode := true // Think Mode default enabled for reasoning models
 
+	drawWelcomeScreen(cfg, thinkMode, activeSearch, deepResearch)
+
 	promptFn := func() string {
 		userName := "User"
 		if u := os.Getenv("USERNAME"); u != "" {
 			userName = u
 		}
-		
+
 		promptSymbol := fmt.Sprintf("\033[1;34m%s >\033[0m ", userName)
 		if thinkMode {
 			if deepResearch {
@@ -163,7 +155,7 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 
 	for {
 		fmt.Println()
-		input, err := ReadLine(cfg, promptFn, &thinkMode, &activeSearch, &deepResearch)
+		input, err := ReadLine(cfg, promptFn, &thinkMode, &activeSearch, &deepResearch, len(session.Messages) == 0)
 		if err != nil {
 			break
 		}
@@ -190,19 +182,15 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 				activeSearch = !activeSearch
 				if activeSearch {
 					deepResearch = false // search and deep are mutually exclusive
-					fmt.Println("âœ“ Active Search enabled.")
-				} else {
-					fmt.Println("âœ— Active Search disabled.")
 				}
+				updateStateAndRedraw(cfg, len(session.Messages) == 0, thinkMode, activeSearch, deepResearch, promptFn)
 				continue
 			case "/deep", "/research":
 				deepResearch = !deepResearch
 				if deepResearch {
 					activeSearch = false
-					fmt.Println("âœ“ Extended Search (Deep Research) enabled.")
-				} else {
-					fmt.Println("âœ— Extended Search disabled.")
 				}
+				updateStateAndRedraw(cfg, len(session.Messages) == 0, thinkMode, activeSearch, deepResearch, promptFn)
 				continue
 			case "/youtube":
 				if arg == "" {
@@ -223,25 +211,16 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 				continue
 			case "/think", "/thinking":
 				thinkMode = !thinkMode
-				if thinkMode {
-					fmt.Println("âœ“ Thinking Mode enabled.")
-				} else {
-					fmt.Println("âœ— Thinking Mode disabled.")
-				}
+				updateStateAndRedraw(cfg, len(session.Messages) == 0, thinkMode, activeSearch, deepResearch, promptFn)
 				continue
 			case "/model":
 				if arg == "" {
-					fmt.Println("\n=== AVAILABLE MODELS ===")
-					for i, m := range SelectableModels {
-						friendlyName := ModelFriendlyNames[m]
-						active := ""
-						if m == cfg.DefaultModel {
-							active = " (Active)"
-						}
-						fmt.Printf(" [%d] %s%s\n", i+1, friendlyName, active)
+					selectedModel, ok := selectModelInteractively(cfg)
+					if ok {
+						cfg.DefaultModel = selectedModel
+						_ = SaveConfig(*cfg)
 					}
-					fmt.Println("\nTo change the model, use: /model <number or name>")
-					fmt.Println("Examples: /model 1   or   /model Prism 5")
+					updateStateAndRedraw(cfg, len(session.Messages) == 0, thinkMode, activeSearch, deepResearch, promptFn)
 					continue
 				}
 				var selectedModel string
@@ -266,9 +245,11 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 				if found {
 					cfg.DefaultModel = selectedModel
 					_ = SaveConfig(*cfg)
-					fmt.Printf("âœ“ Default model changed to: %s\n", ModelFriendlyNames[selectedModel])
+					updateStateAndRedraw(cfg, len(session.Messages) == 0, thinkMode, activeSearch, deepResearch, promptFn)
 				} else {
-					fmt.Printf("âœ— Model '%s' not found. Type '/model' without parameters to see the list.\n", arg)
+					fmt.Print("\033[1A\r\033[K")
+					fmt.Printf("✗ Model '%s' not found. Type '/model' to choose from list.\n", arg)
+					fmt.Print(promptFn())
 				}
 				continue
 			case "/config":
@@ -278,26 +259,21 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 				}
 				continue
 			case "/clear":
-				fmt.Print("\033[H\033[2J")
+				cmdCls := exec.Command("cmd", "/c", "cls")
+				cmdCls.Stdout = os.Stdout
+				_ = cmdCls.Run()
 				sessionID = fmt.Sprintf("chat_%d", time.Now().Unix())
 				session = ChatSession{
 					ID:       sessionID,
 					Title:    "Quick Chat",
 					Messages: make([]ChatMessage, 0),
 				}
-				fmt.Println("âœ“ Chat and history cleared.")
+				drawWelcomeScreen(cfg, thinkMode, activeSearch, deepResearch)
+				fmt.Println("\n\033[32m✔ Chat and history cleared successfully.\033[0m")
 				continue
 			case "/help":
-				fmt.Println("Available commands:")
-				fmt.Println("  /search           - Toggles active web search")
-				fmt.Println("  /deep or /research - Toggles deep research")
-				fmt.Println("  /think            - Toggles thinking mode")
-				fmt.Println("  /model [option]    - Displays or changes the active AI model")
-				fmt.Println("  /youtube <term>   - Opens video directly in browser")
-				fmt.Println("  /swarm <goal>     - Executes agents in swarm")
-				fmt.Println("  /config           - Reconfigures the API key")
-				fmt.Println("  /clear            - Clears the screen and chat history")
-				fmt.Println("  /exit             - Exits the program")
+				fmt.Println()
+				drawHelpBox()
 				continue
 			default:
 				fmt.Printf("Unknown command: %s. Type /help to see commands.\n", cmd)
@@ -346,7 +322,7 @@ func runChatREPL(cfg *Config, startSearch, startDeep bool) {
 		cancel()
 
 		if err != nil {
-			fmt.Printf("Erro ao obter resposta da IA: %v\n", err)
+			fmt.Printf("Error getting response from AI: %v\n", err)
 			continue
 		}
 
@@ -405,7 +381,7 @@ type KEY_EVENT_RECORD struct {
 	BKeyDown          int32
 	WRepeatCount      uint16
 	WVirtualKeyCode   uint16
-	WVirtualScanCode   uint16
+	WVirtualScanCode  uint16
 	UnicodeChar       uint16
 	DwControlKeyState uint32
 }
@@ -426,21 +402,29 @@ var SelectableModels = []string{
 
 func drawModelMenu(selectedIndex int, activeModel string) {
 	fmt.Print("\r\033[K")
-	fmt.Println("\033[1;35m=== SELECT AI MODEL ===\033[0m")
+	borderCol := "\033[38;5;129m" // Magenta/Purple
+	resetCol := "\033[0m"
+
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " SELECT AI MODEL ", 60, "╗") + resetCol)
 	for i, modelID := range SelectableModels {
 		friendlyName := ModelFriendlyNames[modelID]
 		marker := "[ ]"
 		if modelID == activeModel {
-			marker = "\033[32m[âž”]\033[0m"
+			marker = "\033[32m[✔]\033[0m"
 		}
-		
+
+		var line string
 		if i == selectedIndex {
-			fmt.Printf(" \033[1;36mâž” %s %s\033[0m\n", marker, friendlyName)
+			line = fmt.Sprintf("  \033[1;36m❯ %s %s (%s)\033[0m", marker, friendlyName, modelID)
 		} else {
-			fmt.Printf("   %s %s\n", marker, friendlyName)
+			line = fmt.Sprintf("    %s %s (%s)", marker, friendlyName, modelID)
 		}
+		fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(line, 60), borderCol, resetCol)
 	}
-	fmt.Println("\033[90m(Use â†‘/â†“ to navigate, Enter to confirm, Esc to cancel)\033[0m")
+	fmt.Println(borderCol + drawBoxLine("╠", "═", 60, "╣") + resetCol)
+	hintLine := "  Use ↑/↓ to navigate, Enter to confirm, Esc to cancel"
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(hintLine, 60), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╚", "═", 60, "╝") + resetCol)
 }
 
 func clearLines(n int) {
@@ -449,7 +433,7 @@ func clearLines(n int) {
 	}
 }
 
-func runModelSelectionMenu(cfg *Config, promptFn func() string, currentLine []rune) {
+func selectModelInteractively(cfg *Config) (string, bool) {
 	selectedIndex := 0
 	for idx, m := range SelectableModels {
 		if m == cfg.DefaultModel {
@@ -459,6 +443,18 @@ func runModelSelectionMenu(cfg *Config, promptFn func() string, currentLine []ru
 	}
 
 	stdin := windows.Handle(os.Stdin.Fd())
+	var mode uint32
+	isConsole := windows.GetConsoleMode(stdin, &mode) == nil
+
+	if isConsole {
+		originalMode := mode
+		// Disable line input (0x0002) and echo input (0x0004)
+		// keep processed input (0x0001) so Ctrl+C is still handled by Go signal runtime
+		rawMode := originalMode &^ (windows.ENABLE_LINE_INPUT | windows.ENABLE_ECHO_INPUT)
+		_ = windows.SetConsoleMode(stdin, rawMode)
+		defer windows.SetConsoleMode(stdin, originalMode)
+	}
+
 	kernel32 := syscall.NewLazyDLL("kernel32.dll")
 	procReadConsoleInputW := kernel32.NewProc("ReadConsoleInputW")
 
@@ -492,7 +488,7 @@ func runModelSelectionMenu(cfg *Config, promptFn func() string, currentLine []ru
 			if selectedIndex < 0 {
 				selectedIndex = len(SelectableModels) - 1
 			}
-			clearLines(2 + len(SelectableModels))
+			clearLines(4 + len(SelectableModels))
 			drawModelMenu(selectedIndex, cfg.DefaultModel)
 
 		case 0x28: // VK_DOWN
@@ -500,27 +496,42 @@ func runModelSelectionMenu(cfg *Config, promptFn func() string, currentLine []ru
 			if selectedIndex >= len(SelectableModels) {
 				selectedIndex = 0
 			}
-			clearLines(2 + len(SelectableModels))
+			clearLines(4 + len(SelectableModels))
 			drawModelMenu(selectedIndex, cfg.DefaultModel)
 
 		case 0x0D: // VK_RETURN
-			cfg.DefaultModel = SelectableModels[selectedIndex]
-			_ = SaveConfig(*cfg)
-			clearLines(2 + len(SelectableModels))
-			fmt.Printf("%s%s", promptFn(), string(currentLine))
-			return
+			clearLines(4 + len(SelectableModels))
+			return SelectableModels[selectedIndex], true
 
 		case 0x1B: // VK_ESCAPE
-			clearLines(2 + len(SelectableModels))
-			fmt.Printf("%s%s", promptFn(), string(currentLine))
-			return
+			clearLines(4 + len(SelectableModels))
+			return "", false
 		}
 	}
 }
 
+func runModelSelectionMenu(cfg *Config, promptFn func() string, currentLine []rune, thinkMode, activeSearch, deepResearch bool, isWelcomeScreen bool) {
+	selectedModel, ok := selectModelInteractively(cfg)
+	if ok {
+		cfg.DefaultModel = selectedModel
+		_ = SaveConfig(*cfg)
+		if isWelcomeScreen {
+			// Save cursor position
+			fmt.Print("\033[s")
+			// Move up 17 lines to the start of the configuration box
+			fmt.Print("\033[17A\r")
+			// Redraw active state box
+			drawActiveStateBox(cfg, thinkMode, activeSearch, deepResearch)
+			// Restore cursor position
+			fmt.Print("\033[u")
+		}
+	}
+	fmt.Printf("%s%s", promptFn(), string(currentLine))
+}
+
 // ReadLine reads input character by character from the console on Windows in raw mode,
 // allowing keyboard shortcuts like Ctrl+T and Ctrl+M to toggle modes and choose models.
-func ReadLine(cfg *Config, promptFn func() string, thinkMode *bool, activeSearch *bool, deepResearch *bool) (string, error) {
+func ReadLine(cfg *Config, promptFn func() string, thinkMode *bool, activeSearch *bool, deepResearch *bool, isWelcomeScreen bool) (string, error) {
 	stdin := windows.Handle(os.Stdin.Fd())
 	var mode uint32
 	isConsole := windows.GetConsoleMode(stdin, &mode) == nil
@@ -583,6 +594,16 @@ func ReadLine(cfg *Config, promptFn func() string, thinkMode *bool, activeSearch
 		// 1. Detect Ctrl+T (also fallback to ASCII control code 20)
 		if (hasCtrl && (vk == 'T' || vk == 't')) || char == 20 {
 			*thinkMode = !*thinkMode
+			if isWelcomeScreen {
+				// Save cursor position
+				fmt.Print("\033[s")
+				// Move up 17 lines to the start of the configuration box
+				fmt.Print("\033[17A\r")
+				// Redraw active state box
+				drawActiveStateBox(cfg, *thinkMode, *activeSearch, *deepResearch)
+				// Restore cursor position
+				fmt.Print("\033[u")
+			}
 			fmt.Print("\r\033[K")
 			fmt.Printf("%s%s", promptFn(), string(line))
 			continue
@@ -590,7 +611,7 @@ func ReadLine(cfg *Config, promptFn func() string, thinkMode *bool, activeSearch
 
 		// 2. Detect Ctrl+M (also fallback to ASCII control code 13, distinguishing from Enter using the Virtual Key Code)
 		if (hasCtrl && (vk == 'M' || vk == 'm')) || (char == 13 && (vk == 'M' || vk == 'm')) {
-			runModelSelectionMenu(cfg, promptFn, line)
+			runModelSelectionMenu(cfg, promptFn, line, *thinkMode, *activeSearch, *deepResearch, isWelcomeScreen)
 			continue
 		}
 
@@ -623,8 +644,128 @@ func ReadLine(cfg *Config, promptFn func() string, thinkMode *bool, activeSearch
 	}
 }
 
+// padVisual pads a string with spaces up to the target visual width, ignoring ANSI escape codes.
+func padVisual(str string, length int) string {
+	re := regexp.MustCompile(`\033\[[0-9;]*[a-zA-Z]`)
+	plain := re.ReplaceAllString(str, "")
+	visualLen := len([]rune(plain))
+	if visualLen >= length {
+		return str
+	}
+	return str + strings.Repeat(" ", length-visualLen)
+}
+
+// drawBoxLine creates a simple filled box line.
+func drawBoxLine(left, fill string, length int, right string) string {
+	return left + strings.Repeat(fill, length) + right
+}
+
+// drawBoxHeader creates a box line with centered header text.
+func drawBoxHeader(left, fill string, text string, length int, right string) string {
+	fillCount := length - len(text)
+	if fillCount < 0 {
+		fillCount = 0
+	}
+	leftFill := fillCount / 2
+	rightFill := fillCount - leftFill
+	return left + strings.Repeat(fill, leftFill) + text + strings.Repeat(fill, rightFill) + right
+}
+
+// drawHelpBox renders the commands and utilities help box.
+func drawHelpBox() {
+	borderCol := "\033[38;5;244m" // Gray
+	resetCol := "\033[0m"
+	fmt.Println(borderCol + drawBoxHeader("┌", "─", " COMMANDS & UTILITIES ", 70, "┐") + resetCol)
+
+	commandsList := []struct {
+		cmd  string
+		desc string
+	}{
+		{"/search", "Toggles active web search"},
+		{"/deep or /research", "Toggles deep research (exhaustive search)"},
+		{"/think", "Toggles model reasoning/thinking mode"},
+		{"/model", "Interactively select Gemini model"},
+		{"/youtube <term>", "Opens search terms directly in browser"},
+		{"/swarm <goal>", "Executes parallel agents swarm on a task"},
+		{"/config", "Reconfigures your Gemini API key"},
+		{"/clear", "Clears console screen & resets chat history"},
+		{"/exit or /quit", "Exits the application"},
+	}
+
+	for _, item := range commandsList {
+		line := fmt.Sprintf("  \033[1;34m%-18s\033[0m - %s", item.cmd, item.desc)
+		fmt.Printf("%s│%s%s%s│%s\n", borderCol, resetCol, padVisual(line, 70), borderCol, resetCol)
+	}
+	fmt.Println(borderCol + drawBoxLine("└", "─", 70, "┘") + resetCol)
+}
+
+// updateStateAndRedraw clears the typed command on the current line and updates the active state box.
+func updateStateAndRedraw(cfg *Config, isWelcomeScreen bool, thinkMode, activeSearch, deepResearch bool, promptFn func() string) {
+	// Move up 1 line to the prompt line where the command was typed, and clear it
+	fmt.Print("\033[1A\r\033[K")
 
 
 
+	if isWelcomeScreen {
+		// Move up 17 lines to the start of the configuration box
+		fmt.Print("\033[17A\r")
+		// Redraw active state box (which prints 4 lines, leaving cursor 13 lines above prompt)
+		drawActiveStateBox(cfg, thinkMode, activeSearch, deepResearch)
+		// Move down 13 lines to return to prompt line
+		fmt.Print("\033[13B\r")
+	}
 
+	// Move up 1 line to compensate for the fmt.Println() at the top of the REPL loop
+	fmt.Print("\033[1A")
+}
 
+// drawActiveStateBox draws only the active configuration and mode state box.
+func drawActiveStateBox(cfg *Config, thinkMode, activeSearch, deepResearch bool) {
+	borderCol := "\033[38;5;129m" // Magenta/Purple
+	resetCol := "\033[0m"
+
+	thinkStatus := "\033[1;31m[OFF]\033[0m"
+	if thinkMode {
+		thinkStatus = "\033[1;32m[ON]\033[0m"
+	}
+	searchStatus := "\033[1;31m[OFF]\033[0m"
+	if activeSearch {
+		searchStatus = "\033[1;32m[ON]\033[0m"
+	}
+	deepStatus := "\033[1;31m[OFF]\033[0m"
+	if deepResearch {
+		deepStatus = "\033[1;32m[ON]\033[0m"
+	}
+
+	modelName := ModelFriendlyNames[cfg.DefaultModel]
+	if modelName == "" {
+		modelName = cfg.DefaultModel
+	}
+
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " CONFIGURATION & ACTIVE STATE ", 70, "╗") + resetCol)
+	modelLine := fmt.Sprintf("  Model: \033[1;36m%s\033[0m", modelName)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(modelLine, 70), borderCol, resetCol)
+
+	modesLine := fmt.Sprintf("  Modes: Thinking: %s   Search: %s   Deep Research: %s", thinkStatus, searchStatus, deepStatus)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(modesLine, 70), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
+}
+
+// drawWelcomeScreen draws the ASCII logo, active settings box, and help box.
+func drawWelcomeScreen(cfg *Config, thinkMode, activeSearch, deepResearch bool) {
+	fmt.Println()
+	// ASCII Art banner with a sleek magenta-to-cyan theme
+	fmt.Println("  \033[1;35m    ____       _               \033[0m")
+	fmt.Println("  \033[1;35m   / __ \\____(_)____ ____ _____ \033[0m")
+	fmt.Println("  \033[1;36m  / /_/ / ___/ / ___// __ `__  /\033[0m")
+	fmt.Println("  \033[1;36m / ____/ /  / (__  )/ / / / / /\033[0m")
+	fmt.Println("  \033[1;34m/_/   /_/  /_/____//_/ /_/ /_/  \033[1;30mv" + Version + "\033[0m")
+	fmt.Println()
+
+	// Configuration & Active State Box
+	drawActiveStateBox(cfg, thinkMode, activeSearch, deepResearch)
+	fmt.Println()
+
+	// Help box
+	drawHelpBox()
+}

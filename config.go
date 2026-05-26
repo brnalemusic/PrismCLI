@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/pterm/pterm"
 	"golang.org/x/sys/windows"
 )
 
@@ -211,22 +210,22 @@ func (cfg *Config) SetAPIKey(key string) error {
 
 // RunSetupWizard prompts the user for their Gemini API Key in the terminal.
 func RunSetupWizard(cfg *Config) error {
+	borderCol := "\033[38;5;129m" // Magenta/Purple
+	resetCol := "\033[0m"
+	
 	fmt.Println()
-	pterm.DefaultHeader.WithFullWidth().WithBackgroundStyle(pterm.NewStyle(pterm.BgMagenta)).WithMargin(10).Println("PRISM CONFIGURATION WIZARD")
-	pterm.Info.Println("No Gemini API key was found or reconfiguration requested.")
-	pterm.Info.Println("This key is required to connect to the AI models.")
-	pterm.Info.Println("The key will be securely encrypted on your machine.")
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " PRISM SETUP WIZARD ", 60, "╗") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  No Gemini API key was found or reconfiguration requested.", 60), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  This key is required to connect to the AI models.", 60), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  The key will be securely encrypted on your machine.", 60), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╚", "═", 60, "╝") + resetCol)
 	fmt.Println()
 
-	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("\033[33m🔑 Please enter your Gemini API Key:\033[0m ")
 	
-	// We can use helper to read password natively on Windows
-	pterm.Print(pterm.Yellow("Please enter your Gemini API Key: "))
-	
-	// Let's try reading password with console mask or simply reading it
 	key, err := readPasswordWindows()
 	if err != nil {
-		// Fallback to simple read if password masking fails
+		reader := bufio.NewReader(os.Stdin)
 		k, err := reader.ReadString('\n')
 		if err != nil {
 			return err
@@ -244,7 +243,7 @@ func RunSetupWizard(cfg *Config) error {
 	}
 
 	fmt.Println()
-	pterm.Success.Println("API Key saved successfully via Windows DPAPI!")
+	fmt.Println("\033[1;32m✔ API Key saved successfully via Windows DPAPI!\033[0m")
 	fmt.Println()
 	return nil
 }

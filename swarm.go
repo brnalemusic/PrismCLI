@@ -53,13 +53,24 @@ func (bb *Blackboard) PostMessage(agentName, role, content, status string) {
 	bb.AgentStatuses[agentName] = status
 
 	// Visual output on terminal
-	colorCode := "\033[36m" // Cyan for worker
+	var prefix string
 	if role == "Coordinator" {
-		colorCode = "\033[35m" // Magenta for coordinator
+		prefix = "⬢ \033[1;35mCoordinator\033[0m: "
+	} else {
+		prefix = fmt.Sprintf("⬡ \033[1;36m%s\033[0m: ", agentName)
 	}
-	resetCode := "\033[0m"
 
-	fmt.Printf("%s[Swarm - %s (%s)]%s %s (Status: %s)\n", colorCode, agentName, role, resetCode, content, status)
+	statusStr := "\033[33mworking\033[0m"
+	if status == "success" {
+		statusStr = "\033[32msuccess\033[0m"
+	} else if status == "error" {
+		statusStr = "\033[31merror\033[0m"
+	}
+
+	lineText := fmt.Sprintf("  %s%s (%s)", prefix, content, statusStr)
+	borderCol := "\033[38;5;163m" // Neon Violet
+	resetCode := "\033[0m"
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCode, padVisual(lineText, 70), borderCol, resetCode)
 
 	// Notify all waiting listeners
 	for _, l := range bb.listeners {
@@ -131,8 +142,13 @@ func (bb *Blackboard) WaitForUpdates(timeout time.Duration) {
 // SwarmCoordinator runs a simulated agent coordination workflow for CLI
 func RunSwarmTask(ctx context.Context, goal string) {
 	bb := NewBlackboard()
-	fmt.Printf("\n\033[1;34m[Swarm] Starting global goal: \"%s\"\033[0m\n", goal)
-	fmt.Println("------------------------------------------------------------------")
+	borderCol := "\033[38;5;163m" // Neon Violet
+	resetCol := "\033[0m"
+
+	fmt.Println()
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " SWARM COORDINATION STARTED ", 70, "╗") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(fmt.Sprintf("  Goal: %q", goal), 70), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╠", "═", 70, "╣") + resetCol)
 
 	// 1. Coordinator plans
 	bb.PostMessage("Coordinator", "Coordinator", "Analyzing goal and creating action plan...", "working")
@@ -159,15 +175,20 @@ func RunSwarmTask(ctx context.Context, goal string) {
 
 	// 5. Coordinator closes swarm
 	bb.PostMessage("Coordinator", "Coordinator", "All workers completed their tasks successfully. Global goal achieved!", "success")
-	fmt.Println("------------------------------------------------------------------")
-	fmt.Println("\033[1;32m[Swarm] Swarm task finalized!\033[0m")
+	fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
+	fmt.Println()
 }
 
 // RunSubagentsSim simulates the parallel execution of multiple subagents for the CLI.
 func RunSubagentsSim(quantity int, prompts []string) {
 	bb := NewBlackboard()
-	fmt.Printf("\n\033[1;34m[Swarm] Starting %d subagent(s) in parallel...\033[0m\n", quantity)
-	fmt.Println("------------------------------------------------------------------")
+	borderCol := "\033[38;5;163m" // Neon Violet
+	resetCol := "\033[0m"
+
+	fmt.Println()
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " PARALLEL SWARM STARTED ", 70, "╗") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(fmt.Sprintf("  Quantity: %d agents", quantity), 70), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╠", "═", 70, "╣") + resetCol)
 
 	bb.PostMessage("Coordinator", "Coordinator", "Synchronizing agent swarm...", "working")
 	time.Sleep(800 * time.Millisecond)
@@ -192,7 +213,7 @@ func RunSubagentsSim(quantity int, prompts []string) {
 	wg.Wait()
 
 	bb.PostMessage("Coordinator", "Coordinator", "All subagents successfully completed their tasks. Swarm finalized!", "success")
-	fmt.Println("------------------------------------------------------------------")
-	fmt.Println("\033[1;32m[Swarm] Subagent task finalized!\033[0m")
+	fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
+	fmt.Println()
 }
 

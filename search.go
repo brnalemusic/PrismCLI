@@ -208,38 +208,47 @@ func WebReader(targetURL string) (string, error) {
 
 // DeepResearchProtocol implements the 5-phase Deep Research process in the terminal.
 func DeepResearchProtocol(ctx context.Context, initialQuery string, performSearchFunc func(string) ([]SearchResult, error), readLinkFunc func(string) (string, error)) (string, error) {
-	fmt.Println("\n[Deep Research] ==================================================")
-	fmt.Printf("[Deep Research] Starting deep investigation for: \"%s\"\n", initialQuery)
+	borderCol := "\033[38;5;39m" // Deep Blue/Cyan
+	resetCol := "\033[0m"
+
+	fmt.Println()
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " DEEP RESEARCH STARTED ", 70, "╗") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(fmt.Sprintf("  Query: %q", initialQuery), 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  [Phase 1/5] Understanding research scope...", 70), borderCol, resetCol)
 
 	// Phase 1: Scope Understanding
-	fmt.Println("[Phase 1/5] Understanding research scope...")
 	time.Sleep(1 * time.Second)
 
 	// Phase 2: Initial Contextualization
-	fmt.Println("[Phase 2/5] Performing initial searches to capture keywords...")
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  [Phase 2/5] Performing initial searches to capture keywords...", 70), borderCol, resetCol)
 	results, err := performSearchFunc(initialQuery)
 	if err != nil {
+		fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
 		return "", fmt.Errorf("error in initial search: %v", err)
 	}
 
 	// Phase 3: Research Plan and Confirmation
-	fmt.Println("\n[Phase 3/5] Research Plan Prepared:")
-	fmt.Println("------------------------------------------------------------------")
-	fmt.Println("Preliminary results found:")
+	fmt.Println(borderCol + drawBoxLine("╠", "═", 70, "╣") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  [Phase 3/5] Research Plan Prepared", 70), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╠", "═", 70, "╣") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  Preliminary results found:", 70), borderCol, resetCol)
 	for idx, r := range results {
 		if idx >= 3 {
 			break
 		}
-		fmt.Printf(" - [%s] %s\n", r.Title, r.URL)
+		lineResult := fmt.Sprintf("   - [%s] %s", r.Title, r.URL)
+		fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(lineResult, 70), borderCol, resetCol)
 	}
-	fmt.Println("\nDetailed plan:")
-	fmt.Println(" 1. Search for variations and related technical terms.")
-	fmt.Println(" 2. Track and read the most promising links (minimum 10 iterations).")
-	fmt.Println(" 3. Synthesize and cross-reference the collected data.")
-	fmt.Println("------------------------------------------------------------------")
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("", 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  Detailed plan:", 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("   1. Search for variations and related technical terms.", 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("   2. Track and read the most promising links (10 iterations).", 70), borderCol, resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("   3. Synthesize and cross-reference the collected data.", 70), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
+	fmt.Println()
 
 	// Prompt the user for confirmation
-	fmt.Print("Do you want to proceed with the exhaustive investigation? [y/N]: ")
+	fmt.Printf("\033[33m⚡ Do you want to proceed with the exhaustive investigation? [y/N]:\033[0m ")
 	reader := bufio.NewReader(os.Stdin)
 	ans, err := reader.ReadString('\n')
 	if err != nil {
@@ -251,7 +260,8 @@ func DeepResearchProtocol(ctx context.Context, initialQuery string, performSearc
 	}
 
 	// Phase 4: Exhaustive Investigation
-	fmt.Println("\n[Phase 4/5] Running exhaustive investigation (10 iterations)...")
+	fmt.Println()
+	fmt.Println(borderCol + drawBoxHeader("╔", "═", " EXHAUSTIVE INVESTIGATION (Phase 4/5) ", 70, "╗") + resetCol)
 	var findings []string
 
 	// Simple simulation of search/read loop for 10 times with console logging
@@ -271,16 +281,19 @@ func DeepResearchProtocol(ctx context.Context, initialQuery string, performSearc
 	for i := 0; i < 10; i++ {
 		select {
 		case <-ctx.Done():
+			fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
 			return "", context.Canceled
 		default:
 		}
 
 		q := queries[i]
-		fmt.Printf(" -> Iteration %d/10: Searching for \"%s\"...\n", i+1, q)
+		lineIter := fmt.Sprintf("  -> Iteration %d/10: Searching for %q...", i+1, q)
+		fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(lineIter, 70), borderCol, resetCol)
 		loopResults, err := performSearchFunc(q)
 		if err == nil && len(loopResults) > 0 {
 			targetLink := loopResults[0].URL
-			fmt.Printf("    -> Reading content from: %s...\n", targetLink)
+			lineRead := fmt.Sprintf("     -> Reading content from: %s...", targetLink)
+			fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual(lineRead, 70), borderCol, resetCol)
 			content, err := readLinkFunc(targetLink)
 			if err == nil {
 				// Take a snippet
@@ -295,10 +308,12 @@ func DeepResearchProtocol(ctx context.Context, initialQuery string, performSearc
 	}
 
 	// Phase 5: Structured Synthesis
-	fmt.Println("\n[Phase 5/5] Consolidating and synthesizing information...")
+	fmt.Println(borderCol + drawBoxLine("╠", "═", 70, "╣") + resetCol)
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  [Phase 5/5] Consolidating and synthesizing information...", 70), borderCol, resetCol)
 	time.Sleep(1 * time.Second)
-	fmt.Println("[Deep Research] Investigation completed successfully!")
-	fmt.Println("==================================================================")
+	fmt.Printf("%s║%s%s%s║%s\n", borderCol, resetCol, padVisual("  [Deep Research] Investigation completed successfully!", 70), borderCol, resetCol)
+	fmt.Println(borderCol + drawBoxLine("╚", "═", 70, "╝") + resetCol)
+	fmt.Println()
 
 	// Merge findings to return to intelligence
 	var sb strings.Builder
