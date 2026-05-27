@@ -19,7 +19,7 @@ import (
 	"golang.org/x/term"
 )
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 const SystemPrompt = `You are Prism, a highly capable local AI agent operating in command-line (CLI) mode on Windows.
 Your core philosophy is direct local action, total privacy, and native integration with the operating system.
@@ -789,6 +789,8 @@ func drawWelcomeScreen(cfg *Config, thinkMode, activeSearch, deepResearch bool) 
 	// Help box
 	drawHelpBox()
 }
+
+
 
 
 
